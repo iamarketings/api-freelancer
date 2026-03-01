@@ -1,14 +1,16 @@
 {
-  "name": "api",
+  "name": "api-freelancer",
   "version": "1.0.0",
-  "description": "",
+  "description": "API Bounty Hunter - Agrège les missions GitHub, hackathons Devpost et offres RemoteOK via IA.",
+  "author": "iamarketings <https://github.com/iamarketings>",
+  "license": "MIT",
+  "homepage": "https://github.com/iamarketings/api-freelancer",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "type": "commonjs",
   "dependencies": {
     "axios": "^1.13.6",

@@ -1,73 +1,137 @@
-# Bounty Hunter API
+# API Freelancer — Bounty Hunter
 
-Bounty Hunter est une API Node.js qui interroge régulièrement la plateforme GitHub pour des "issues" rémunérées (Bounties). Elle trie, score et évalue ces opportunités de travail via une analyse par Intelligence Artificielle (DeepSeek) pour détecter le niveau d'intérêt et les arnaques potentielles.
+> **© 2026 iamarketings** — Tous droits réservés.  
+> [https://github.com/iamarketings/api-freelancer](https://github.com/iamarketings/api-freelancer)
 
-## 🚀 Fonctionnalités Clés
-- **Collecte par CRON** : Synchronise automatiquement les Bounties GitHub via l'API GraphQL toutes les 3 heures.
-- **Pagination Intelligente** : Capable de traiter jusqu'à 1000 suggestions de missions simultanément.
-- **Scoring System** : Pèse l'intérêt d'une mission en fonction des assignations et du nombre de commentaires concurrents.
-- **Analyse IA (DeepSeek)** : Intégration de l'API DeepSeek pour vérifier que l'offre de projet est légitime et en générer un résumé universel.
-- **Déploiement Super-Léger** : Utilise le système de base de données JSON `LowDB`. Zéro configuration, aucune compilation C++ n'est requise.
+API Node.js qui agrège automatiquement des missions rémunérées, des hackathons et des offres remote depuis plusieurs plateformes. Elle utilise un système de scoring et l'IA DeepSeek pour filtrer les arnaques et résumer chaque opportunité.
 
 ---
 
-## 💻 Installation
+## 🗂️ Sources de données
 
-1. **Cloner / Télécharger le projet**.
-2. **Installer les dépendances** : 
-   *(Il est recommandé d'utiliser `pnpm` mais `npm` fonctionne)*
-   ```bash
-   pnpm install
-   ```
-
-3. **Variables d'environnement** :
-   Renommez `api/.env.example` en `api/.env` et renseignez-y deux clés obligatoires :
-   ```env
-   # Le port d'écoute du serveur
-   PORT=3000
-   
-   # Votre token personnel GitHub (utilisé par GraphQL)
-   GITHUB_TOKEN=ghp_votreetokengithub
-   
-   # Votre clé d'API DeepSeek
-   DEEPSEEK_API_KEY=sk-votreclefdeepseek
-   ```
-
-4. **Lancer le serveur API** :
-   ```bash
-   node index.js
-   ```
+| Source | Description | Fréquence de mise à jour |
+|---|---|---|
+| **GitHub** (GraphQL) | Issues avec labels `bounty`, `reward`, `paid` | Toutes les 3 heures |
+| **Devpost** | Hackathons en cours | Toutes les 6 heures |
+| **RemoteOK** | Offres d'emploi remote/freelance | Toutes les 12 heures |
 
 ---
 
-## 📚 Endpoints (Routes API)
+## 🚀 Installation
 
-L'API fonctionnera par défaut sur `http://localhost:3000`.
+### 1. Cloner le projet
+```bash
+git clone https://github.com/iamarketings/api-freelancer.git
+cd api-freelancer
+```
+
+### 2. Installer les dépendances
+```bash
+pnpm install
+```
+
+### 3. Configurer les variables d'environnement
+```bash
+cp .env.example .env
+```
+
+Renseignez votre `.env` :
+```env
+PORT=3000
+GITHUB_TOKEN=ghp_votre_token_github
+DEEPSEEK_API_KEY=sk-votre_cle_deepseek
+```
+
+### 4. Lancer le serveur
+```bash
+npm start
+# ou en mode dev (rechargement automatique)
+npm run dev
+```
+
+---
+
+## 📡 Endpoints API
+
+L'API écoute sur `http://localhost:3000` par défaut.
 
 ### `GET /api/projet`
-Renvoie la liste des Bounties actuels triés par Score (de ceux recommandés en priorité aux moins vitaux).
+Missions GitHub rémunérées (bounties). Triées par score décroissant.
 
-**Paramètres Query disponibles :**
-- `?page=X` (Optionnel) : Le numéro de la page à consulter (Ex: `page=2`).
-- `?limit=Y` (Optionnel) : Le nombre de résultats par page (`10`, `50` ou `100` maximum).
+### `GET /api/hackathon`
+Hackathons actifs depuis Devpost.
+
+### `GET /api/freelance`
+Offres d'emploi remote depuis RemoteOK.
+
+**Paramètres de pagination disponibles sur toutes les routes :**
+| Paramètre | Valeurs acceptées | Défaut |
+|---|---|---|
+| `page` | Entier ≥ 1 | `1` |
+| `limit` | `10`, `50`, `100` | `50` |
+
+**Exemple :**
+```
+GET /api/projet?page=2&limit=10
+GET /api/hackathon?page=1&limit=100
+GET /api/freelance?page=1&limit=50
+```
+
+**Format de réponse :**
+```json
+{
+  "success": true,
+  "page": 2,
+  "limit": 10,
+  "totalPages": 64,
+  "totalItems": 639,
+  "count": 10,
+  "data": [ ... ]
+}
+```
 
 ### `POST /api/projet/refresh`
-Force la synchronisation avec GitHub et lance l'analyse IA des nouveaux projets. _Attention : Ce processus fonctionne en arrière-plan (Batch de 1 par 1 pour sécuriser vos Quotas)._
+Force la synchronisation GitHub + analyse DeepSeek en arrière-plan.
+
+### `POST /api/hackathon/refresh`
+Force la resynchronisation des hackathons Devpost.
+
+### `POST /api/freelance/refresh`
+Force la resynchronisation des offres RemoteOK.
 
 ---
 
-## 🔮 Rapport d'Audit & Améliorations Futures
+## ⚙️ Architecture
 
-L'API actuelle est totalement fonctionnelle. Cependant, en cas de déploiement en production massive, voici les goulots d'étranglements ou considérations futures :
+```
+src/
+├── jobs/
+│   ├── bountyFetcher.js          # CRON GitHub (3h)
+│   ├── hackathonFetcher.js       # CRON Devpost (6h)
+│   ├── remoteokFetcher.js        # CRON RemoteOK (12h)
+│   └── cleanupClosedBounties.js  # CRON nettoyage (minuit)
+├── routes/
+│   ├── bounties.js               # Route /api/projet
+│   ├── hackathon.js              # Route /api/hackathon
+│   └── freelance.js              # Route /api/freelance
+├── services/
+│   ├── githubService.js          # Requêtes GraphQL GitHub
+│   └── aiSummarizer.js           # Intégration DeepSeek
+├── utils/
+│   └── scoringAlgo.js            # Algorithme de scoring
+└── db/
+    └── database.js               # LowDB (stockage JSON local)
+```
 
-### 1. Limites de `LowDB` et Sécurité Concurrentielle (Concurrence DB)
-Actuellement, tout est stocké dans un unique fichier `dev.json`. Si le backend doit gérer plusieurs requêtes simultanées de modifications lourdes, un fichier JSON peut casser.
-* **Solution future** : Restaurer la base `SQLite3` ou passer sur PostgreSQL lorsque l'environnement d'hébergement supportera les binaires natifs en Node.
+---
 
-### 2. Le Coût et Rate Limit de "DeepSeek"
-Si l'application scanne et ajoute subitement 10 000 issues d'un coup, le compte DeepSeek risque d'être plafonné ou de déclencher une facturation importante. La limite d'une seconde introduite couvre la limite de Token/Minutes MAIS ne protège pas du coût.
-* **Solution future** : Filtrer agressivement les labels de bases AVANT l'étape DeepSeek.
+## 🔒 Sécurité
 
-### 3. Expiration d'Issues Orphelines
-Aujourd'hui, si une Issue n'apparaît plus DU TOUT sur GraphQL, elle reste marquée "OPEN" éternellement dans le JSON local.
-* **Solution future** : Ajouter un CRON de nettoyage (`Cleanup`) qui passe sur tous les `state: 'OPEN'` existants de `dev.json` afin de valider individuellement si le tracker GitHub les a fermés.
+- Les clés API (`GITHUB_TOKEN`, `DEEPSEEK_API_KEY`) sont dans `.env`, jamais committées.
+- Le fichier `dev.json` (base de données locale) est exclu du dépôt via `.gitignore`.
+
+---
+
+## 📄 Licence
+
+MIT — © 2026 [iamarketings](https://github.com/iamarketings)
