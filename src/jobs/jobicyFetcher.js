@@ -62,8 +62,8 @@ JSON strict :
 
 async function fetchJobicyJobs() {
     try {
-        const response = await axios.get('https://jobicy.com/api/v0/remote-jobs', {
-            params: { count: 50, geo: 'worldwide' },
+        const response = await axios.get('https://jobicy.com/api/v2/remote-jobs', {
+            params: { count: 100 },
             headers: { 'Accept': 'application/json' },
             timeout: 15000,
         });
