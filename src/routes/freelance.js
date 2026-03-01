@@ -14,8 +14,9 @@ router.get('/', (req, res) => {
         const limit = limitAllowed.includes(reqLimit) ? reqLimit : 50;
         const startIndex = (page - 1) * limit;
 
+        // Filtre : uniquement les offres Remotive et Jobicy (accès candidature direct)
         const allJobs = db.get('bounties')
-            .filter({ state: 'OPEN', repo: 'RemoteOK' })
+            .filter(b => b.state === 'OPEN' && (b.repo === 'Remotive' || b.repo === 'Jobicy'))
             .orderBy(['score'], ['desc'])
             .value();
 

@@ -50,7 +50,11 @@ Format de réponse STRICT attendu en JSON :
         });
 
         // Parsing de la réponse JSON renvoyée par l'IA
-        const aiResult = JSON.parse(response.choices[0].message.content);
+        // Nettoyage de sécurité : certains LLMs ajoutent des balises ```json``` même en mode JSON
+        // (fix suggéré par Gemini - valide)
+        const rawContent = response.choices[0].message.content;
+        const cleanContent = rawContent.replace(/```json|```/g, '').trim();
+        const aiResult = JSON.parse(cleanContent);
         return aiResult;
 
     } catch (error) {

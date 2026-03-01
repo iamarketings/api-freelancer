@@ -3,7 +3,8 @@ const express = require('express');
 const { startCronJobs } = require('./src/jobs/bountyFetcher');
 const { startCleanupCron } = require('./src/jobs/cleanupClosedBounties');
 const { startHackathonCron, runHackathonFetcherJob } = require('./src/jobs/hackathonFetcher');
-const { startRemoteOKCron, runRemoteOKFetcherJob } = require('./src/jobs/remoteokFetcher');
+const { startRemotiveCron, runRemotiveFetcherJob } = require('./src/jobs/remotiveFetcher');
+const { startJobicyCron, runJobicyFetcherJob } = require('./src/jobs/jobicyFetcher');
 const bountiesRouter = require('./src/routes/bounties');
 const hackathonRouter = require('./src/routes/hackathon');
 const freelanceRouter = require('./src/routes/freelance');
@@ -15,30 +16,31 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 // Routes
-app.use('/api/projet', bountiesRouter);
-app.use('/api/hackathon', hackathonRouter);
-app.use('/api/freelance', freelanceRouter);
+app.use('/api/projet', bountiesRouter);       // GitHub bounties uniquement
+app.use('/api/hackathon', hackathonRouter);   // Hackathons Devpost
+app.use('/api/freelance', freelanceRouter);   // Offres Remotive + Jobicy (accès direct)
 
-// Handler Route de base
+// Route de base
 app.get('/', (req, res) => {
-    res.send('API Bounty Hunter en ligne ! Visitez /api/projet');
+    res.send('API Freelancer en ligne ! Routes : /api/projet | /api/hackathon | /api/freelance');
 });
 
 // Lancement du serveur
 app.listen(PORT, () => {
     console.log(`🚀 Serveur en ligne sur http://localhost:${PORT}`);
 
-    // Démarrage de l'orchestrateur de Tâches de Fond (Le fameux CRON)
     startCronJobs();
-    // Démarrage du Nettoyeur de Bounties (tous les jours à minuit)
     startCleanupCron();
-    // Démarrage du récupérateur de Hackathons Devpost (toutes les 6h)
+
+    // Hackathons : CRON 6h + premier lancement à +10s
     startHackathonCron();
-    // Premier lancement décalé de 10s pour ne pas saturer la DB au démarrage
     setTimeout(() => runHackathonFetcherJob().catch(console.error), 10000);
 
-    // Démarrage du récupérateur d'offres RemoteOK (toutes les 12h)
-    startRemoteOKCron();
-    // Premier lancement décalé de 30s (après Hackathons) pour éviter les écritures simultanées
-    setTimeout(() => runRemoteOKFetcherJob().catch(console.error), 30000);
+    // Remotive : CRON 12h + premier lancement à +45s
+    startRemotiveCron();
+    setTimeout(() => runRemotiveFetcherJob().catch(console.error), 45000);
+
+    // Jobicy : CRON 12h30 + premier lancement à +90s
+    startJobicyCron();
+    setTimeout(() => runJobicyFetcherJob().catch(console.error), 90000);
 });

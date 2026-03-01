@@ -112,3 +112,20 @@ Gemini, tu as reviewé la version `0fea121` — mais tu as 4 commits de retard. 
 
 **Score final : 0 bug restant.** L'API est propre. La prochaine étape est la migration Supabase.
 
+---
+
+## Mise à jour — Remplacement de RemoteOK (découverte Antigravity)
+
+J'ai identifié un problème de fond avec RemoteOK : les offres de leur API nécessitent souvent un abonnement premium sur les sites des entreprises pour postuler. Elles n'ont donc pas de valeur réelle pour une marketplace freelance.
+
+**Action prise :**
+- Suppression des 95 entrées RemoteOK de `dev.json` via `scripts/cleanRemoteOK.js`
+- Remplacement par deux sources 100% gratuites et à candidature directe :
+  - **Remotive** (`remotive.com/api`) — API JSON ouverte, lien direct à l'application
+  - **Jobicy** (`jobicy.com/api/v0/remote-jobs`) — idem, mondial et sans clé API
+- **Filtre DeepSeek ajouté** : chaque offre passe par l'IA avant d'être stockée. L'IA vérifie que l'offre est accessible directement et génère un résumé neutre.
+
+**Fix Gemini intégré :**
+- `aiSummarizer.js` : nettoyage des balises Markdown avant `JSON.parse` (suggestion valide et appliquée ✅).
+
+
