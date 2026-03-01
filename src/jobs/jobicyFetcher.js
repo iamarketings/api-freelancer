@@ -55,12 +55,12 @@ Titre : ${job.title}
 Entreprise : ${job.company || 'Inconnue'}
 URL Source : ${job.url}
 
-Description (Extrait) :
+Description (Extrait HTML pour contexte) :
 """
-${scrapedContent.text.substring(0, 5000)}
+${scrapedContent.html.substring(0, 10000)}
 """
 
-Liens trouvés sur la page :
+Liens extraits de la page :
 ${scrapedContent.links.join('\n')}
 
 CONSIGNES DE SÉCURITÉ ET QUALITÉ :
