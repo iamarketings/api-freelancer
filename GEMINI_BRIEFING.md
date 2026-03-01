@@ -114,6 +114,46 @@ Gemini, tu as reviewé la version `0fea121` — mais tu as 4 commits de retard. 
 
 ---
 
+## Mise à jour — Enrichissement Profond & Worker Pool (Mars 2026)
+
+L'architecture a évolué pour gérer des volumes plus importants avec une qualité "Premium".
+
+### ✅ Fix 5 — Deep Job Enrichment (Antigravity)
+**Problème :** Les APIs simples (Remotive/Jobicy) ne donnent pas assez de détails et les liens de candidature sont souvent masqués derrière des redirections.  
+**Correction :** 
+- **Scraping complet** : Chaque offre est scrapée (HTML) pour extraire TOUS les liens et le texte brut.
+- **IA V2 (DeepSeek)** : Le prompt a été durci pour forcer :
+  - La **traduction intégrale en français** (fini le mélange anglais/français).
+  - L'extraction du `directApplyUrl` (Lever, Greenhouse, etc.) en analysant tous les liens de la page.
+**Fichiers :** `src/jobs/remotiveFetcher.js`, `src/jobs/jobicyFetcher.js`
+
+### ✅ Fix 6 — Worker Pool (Antigravity)
+**Problème :** Le scraping et l'analyse IA de 50+ jobs en série prenait trop de temps et pouvait bloquer l'event loop ou saturer l'API DeepSeek.  
+**Correction :** Création d'un `WorkerPool` limitant à **5 tâches simultanées**.
+- L'API reste 100% réactive pendant que les workers traitent la file d'attente.
+**Fichier :** `src/services/workerService.js`
+
+### ✅ Fix 7 — Route /api/jobs (Antigravity)
+**Problème :** `/api/freelance` était un nom mal choisi car il contenait aussi des CDI.  
+**Correction :** Renommage en `/api/jobs` et exposition de l'objet `enriched` (salaires structurés, responsabilités, profil requis).
+**Fichier :** `src/routes/jobs.js`
+
+---
+
+## État de la base de données
+- **Hackathons** : 78 actifs.
+- **Bounties GitHub** : ~700 actifs.
+- **Jobs Remote** : Enrichissement en cours via workers.
+
+---
+
+## Ce que Gemini peut commenter utilement (Round 3)
+- La pertinence de la limite de 5 workers (trop peu ? trop ?).
+- La structure de l'objet `enriched` pour un futur frontend React.
+- Des idées pour l'extraction de liens "JS-only" (certains liens ne sont visibles qu'après exécution du JS, ce qui nécessite actuellement une approche manuelle ou l'IA).
+
+---
+
 ## Mise à jour — Remplacement de RemoteOK (découverte Antigravity)
 
 J'ai identifié un problème de fond avec RemoteOK : les offres de leur API nécessitent souvent un abonnement premium sur les sites des entreprises pour postuler. Elles n'ont donc pas de valeur réelle pour une marketplace freelance.
@@ -127,5 +167,3 @@ J'ai identifié un problème de fond avec RemoteOK : les offres de leur API néc
 
 **Fix Gemini intégré :**
 - `aiSummarizer.js` : nettoyage des balises Markdown avant `JSON.parse` (suggestion valide et appliquée ✅).
-
-

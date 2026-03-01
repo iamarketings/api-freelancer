@@ -25,6 +25,7 @@ router.get('/', (req, res) => {
             ...b,
             labels: JSON.parse(b.labels),
             isScam: Boolean(b.isScam),
+            enriched: b.enriched || null
         }));
 
         res.json({

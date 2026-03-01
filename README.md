@@ -9,11 +9,12 @@ API Node.js qui agrège automatiquement des missions rémunérées, des hackatho
 
 ## 🗂️ Sources de données
 
-| Source | Description | Fréquence de mise à jour |
+| Source | Description | Fréquence |
 |---|---|---|
-| **GitHub** (GraphQL) | Issues avec labels `bounty`, `reward`, `paid` | Toutes les 3 heures |
-| **Devpost** | Hackathons en cours | Toutes les 6 heures |
-| **RemoteOK** | Offres d'emploi remote/freelance | Toutes les 12 heures |
+| **GitHub** (GraphQL) | Issues avec labels `bounty`, `reward`, `paid` | 3h |
+| **Devpost** | Hackathons mondiaux | 6h |
+| **Remotive** | Emplois remote (Deep Enrichment + Direct Apply) | 12h |
+| **Jobicy** | Emplois remote (Deep Enrichment + Direct Apply) | 12h30 |
 
 ---
 
@@ -45,7 +46,7 @@ DEEPSEEK_API_KEY=sk-votre_cle_deepseek
 ### 4. Lancer le serveur
 ```bash
 npm start
-# ou en mode dev (rechargement automatique)
+# ou en mode dev
 npm run dev
 ```
 
@@ -53,51 +54,18 @@ npm run dev
 
 ## 📡 Endpoints API
 
-L'API écoute sur `http://localhost:3000` par défaut.
-
 ### `GET /api/projet`
-Missions GitHub rémunérées (bounties). Triées par score décroissant.
+Missions GitHub rémunérées. Filtré par score.
 
 ### `GET /api/hackathon`
-Hackathons actifs depuis Devpost.
+Hackathons actifs de Devpost.
 
-### `GET /api/freelance`
-Offres d'emploi remote depuis RemoteOK.
+### `GET /api/jobs`
+Offres remote premium enrichies par IA (Remotive + Jobicy).
+- Traduction automatique en français.
+- Extraction de `directApplyUrl` (Lien direct vers le formulaire de l'entreprise).
 
-**Paramètres de pagination disponibles sur toutes les routes :**
-| Paramètre | Valeurs acceptées | Défaut |
-|---|---|---|
-| `page` | Entier ≥ 1 | `1` |
-| `limit` | `10`, `50`, `100` | `50` |
-
-**Exemple :**
-```
-GET /api/projet?page=2&limit=10
-GET /api/hackathon?page=1&limit=100
-GET /api/freelance?page=1&limit=50
-```
-
-**Format de réponse :**
-```json
-{
-  "success": true,
-  "page": 2,
-  "limit": 10,
-  "totalPages": 64,
-  "totalItems": 639,
-  "count": 10,
-  "data": [ ... ]
-}
-```
-
-### `POST /api/projet/refresh`
-Force la synchronisation GitHub + analyse DeepSeek en arrière-plan.
-
-### `POST /api/hackathon/refresh`
-Force la resynchronisation des hackathons Devpost.
-
-### `POST /api/freelance/refresh`
-Force la resynchronisation des offres RemoteOK.
+**Pagination :** `?page=1&limit=50|100`
 
 ---
 
@@ -106,21 +74,23 @@ Force la resynchronisation des offres RemoteOK.
 ```
 src/
 ├── jobs/
-│   ├── bountyFetcher.js          # CRON GitHub (3h)
-│   ├── hackathonFetcher.js       # CRON Devpost (6h)
-│   ├── remoteokFetcher.js        # CRON RemoteOK (12h)
-│   └── cleanupClosedBounties.js  # CRON nettoyage (minuit)
+│   ├── bountyFetcher.js          # CRON GitHub
+│   ├── hackathonFetcher.js       # CRON Devpost
+│   ├── remotiveFetcher.js        # Scraping + IA Remotive
+│   ├── jobicyFetcher.js          # Scraping + IA Jobicy
+│   └── cleanupClosedBounties.js  # Maintenance DB
 ├── routes/
-│   ├── bounties.js               # Route /api/projet
-│   ├── hackathon.js              # Route /api/hackathon
-│   └── freelance.js              # Route /api/freelance
+│   ├── bounties.js               # /api/projet
+│   ├── hackathon.js              # /api/hackathon
+│   └── jobs.js                   # /api/jobs (Enrichi)
 ├── services/
-│   ├── githubService.js          # Requêtes GraphQL GitHub
-│   └── aiSummarizer.js           # Intégration DeepSeek
-├── utils/
-│   └── scoringAlgo.js            # Algorithme de scoring
-└── db/
-    └── database.js               # LowDB (stockage JSON local)
+│   ├── workerService.js          # Pool de Workers (Max 5 concurrents)
+│   ├── githubService.js          # GraphQL Engine
+│   └── aiSummarizer.js           # DeepSeek Engine
+├── db/
+│   └── database.js               # LowDB Storage
+└── utils/
+    └── scoringAlgo.js            # Ranking Engine
 ```
 
 ---
