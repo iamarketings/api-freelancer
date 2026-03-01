@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { startCronJobs } = require('./src/jobs/bountyFetcher');
 const { startCleanupCron } = require('./src/jobs/cleanupClosedBounties');
+const { startHackathonCron, runHackathonFetcherJob } = require('./src/jobs/hackathonFetcher');
 const bountiesRouter = require('./src/routes/bounties');
 
 const app = express();
@@ -26,4 +27,8 @@ app.listen(PORT, () => {
     startCronJobs();
     // Démarrage du Nettoyeur de Bounties (tous les jours à minuit)
     startCleanupCron();
+    // Démarrage du récupérateur de Hackathons Devpost (toutes les 6h)
+    startHackathonCron();
+    // Premier lancement immédiat pour peupler la base
+    runHackathonFetcherJob().catch(console.error);
 });
