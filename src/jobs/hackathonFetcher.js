@@ -4,41 +4,30 @@ const db = require('../db/database');
 require('dotenv').config();
 
 /**
- * Récupère les hackathons ouverts depuis l'API officielle de Devpost.
- * Utilise l'API JSON native de Devpost (pas de scraping, pas de Puppeteer).
+ * Nettoie le HTML des champs de l'API Devpost (ex: prize_amount qui contient des <span>)
  */
+function stripHtml(str) {
+    if (!str) return '';
+    return str.replace(/<[^>]*>/g, '').trim();
+}
+
 async function fetchDevpostHackathons() {
     const allHackathons = [];
-    const MAX_PAGES = 5; // 5 * 24 = 120 hackathons max
+    const MAX_PAGES = 5;
 
     for (let page = 1; page <= MAX_PAGES; page++) {
         try {
             const response = await axios.get('https://devpost.com/api/hackathons', {
-                params: {
-                    page: page,
-                    per_page: 24,
-                    status: 'open', // Uniquement les hackathons actifs
-                    order_by: 'deadline',
-                    sort_by: 'asc',
-                },
-                headers: {
-                    'Accept': 'application/json',
-                    'User-Agent': 'Mozilla/5.0 (compatible; BountyHunterBot/1.0)',
-                },
+                params: { page, per_page: 24, status: 'open', order_by: 'deadline', sort_by: 'asc' },
+                headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; BountyHunterBot/1.0)' },
                 timeout: 10000,
             });
 
             const hackathons = response.data.hackathons;
-
-            if (!hackathons || hackathons.length === 0) {
-                console.log(`[Devpost API] Fin des résultats à la page ${page}.`);
-                break;
-            }
+            if (!hackathons || hackathons.length === 0) break;
 
             allHackathons.push(...hackathons);
             console.log(`[Devpost API] Page ${page} récupérée (${allHackathons.length} hackathons total)`);
-
-            // Pause courtoise entre les requêtes
             await new Promise(resolve => setTimeout(resolve, 800));
 
         } catch (error) {
@@ -50,29 +39,16 @@ async function fetchDevpostHackathons() {
     return allHackathons;
 }
 
-/**
- * Calcule un score de pertinence pour un hackathon Devpost
- * basé sur les récompenses et l'imminence de la deadline.
- */
 function calculateHackathonScore(hack) {
-    let score = 70; // Score de base pour un hackathon
+    let score = 70;
 
-    // Bonus si le prix est élevé
-    if (hack.total_prizes && hack.total_prizes > 10000) score += 20;
-    else if (hack.total_prizes && hack.total_prizes > 1000) score += 10;
+    const prizeStr = stripHtml(hack.prize_amount || '');
+    const prizeNum = parseInt(prizeStr.replace(/[^0-9]/g, '')) || 0;
+    if (prizeNum > 10000) score += 20;
+    else if (prizeNum > 1000) score += 10;
 
-    // Bonus si la deadline est proche (urgence)
-    if (hack.submission_period_dates) {
-        try {
-            const deadline = new Date(hack.ends_at || hack.submission_period_dates.split(' - ')[1]);
-            const daysLeft = (deadline - new Date()) / (1000 * 60 * 60 * 24);
-            if (daysLeft > 0 && daysLeft < 7) score += 10; // Deadline dans la semaine
-            else if (daysLeft < 0) return 0; // Déjà expiré
-        } catch (e) { /* date non parsable */ }
-    }
-
-    // Bonus si beaucoup de participants (preuve de légitimité)
     if (hack.registrations_count && hack.registrations_count > 500) score += 5;
+    if (hack.managed_by_devpost_badge) score += 5; // Badge officiel Devpost
 
     return Math.min(score, 100);
 }
@@ -88,42 +64,47 @@ async function runHackathonFetcherJob() {
         let updatedCount = 0;
 
         for (const hack of hackathons) {
-            const hackId = `devpost-${hack.id || hack.url.split('/').pop()}`;
+            const hackId = `devpost-${hack.id}`;
             const score = calculateHackathonScore(hack);
-            const summary = hack.tagline || hack.description || 'Hackathon en ligne avec récompenses à la clé.';
-            const prizes = hack.total_prizes ? ` Prix total : $${hack.total_prizes.toLocaleString()}.` : '';
+
+            // Image : l'URL commence par "//" (sans https:), on la corrige
+            const imageUrl = hack.thumbnail_url
+                ? (hack.thumbnail_url.startsWith('//') ? 'https:' + hack.thumbnail_url : hack.thumbnail_url)
+                : null;
+
+            // Résumé : on compose une phrase avec les données disponibles
+            const prizeStr = stripHtml(hack.prize_amount || '');
+            const location = hack.displayed_location?.location || 'En ligne';
+            const dates = hack.submission_period_dates || '';
+            let summary = `Hackathon ${location}.`;
+            if (prizeStr) summary += ` Prix : ${prizeStr}.`;
+            if (dates) summary += ` Dates : ${dates}.`;
 
             const existing = db.get('bounties').find({ id: hackId }).value();
 
             if (existing) {
-                // Mise à jour du statut (si le hackathon est terminé, on le clôt)
                 db.get('bounties')
                     .find({ id: hackId })
-                    .assign({
-                        state: score === 0 ? 'CLOSED' : 'OPEN',
-                        lastActivityAt: new Date().toISOString(),
-                        score: score,
-                    })
+                    .assign({ state: 'OPEN', lastActivityAt: new Date().toISOString(), score, imageUrl, aiSummary: summary })
                     .write();
                 updatedCount++;
             } else {
-                const newHackathon = {
+                db.get('bounties').push({
                     id: hackId,
                     title: `[Hackathon] ${hack.title}`,
                     repo: 'Devpost',
                     url: hack.url || `https://devpost.com/hackathons/${hack.id}`,
+                    imageUrl,
                     state: 'OPEN',
                     commentCount: hack.registrations_count || 0,
-                    createdAt: new Date(hack.created_at || new Date()).toISOString(),
+                    createdAt: new Date().toISOString(),
                     lastActivityAt: new Date().toISOString(),
                     labels: JSON.stringify(['hackathon', 'devpost']),
-                    score: score,
-                    aiSummary: summary + prizes,
-                    isScam: 0, // Les hackathons Devpost sont vérifiés par la plateforme
+                    score,
+                    aiSummary: summary,
+                    isScam: 0,
                     discoveredAt: new Date().toISOString(),
-                };
-
-                db.get('bounties').push(newHackathon).write();
+                }).write();
                 addedCount++;
                 console.log(`✨ Hackathon ajouté: ${hack.title} (Score: ${score})`);
             }

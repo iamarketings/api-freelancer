@@ -3,8 +3,10 @@ const express = require('express');
 const { startCronJobs } = require('./src/jobs/bountyFetcher');
 const { startCleanupCron } = require('./src/jobs/cleanupClosedBounties');
 const { startHackathonCron, runHackathonFetcherJob } = require('./src/jobs/hackathonFetcher');
+const { startRemoteOKCron, runRemoteOKFetcherJob } = require('./src/jobs/remoteokFetcher');
 const bountiesRouter = require('./src/routes/bounties');
 const hackathonRouter = require('./src/routes/hackathon');
+const freelanceRouter = require('./src/routes/freelance');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,6 +17,7 @@ app.use(express.json());
 // Routes
 app.use('/api/projet', bountiesRouter);
 app.use('/api/hackathon', hackathonRouter);
+app.use('/api/freelance', freelanceRouter);
 
 // Handler Route de base
 app.get('/', (req, res) => {
@@ -31,6 +34,10 @@ app.listen(PORT, () => {
     startCleanupCron();
     // Démarrage du récupérateur de Hackathons Devpost (toutes les 6h)
     startHackathonCron();
-    // Premier lancement immédiat pour peupler la base
+    // Premier lancement immédiat Hackathons
     runHackathonFetcherJob().catch(console.error);
+    // Démarrage du récupérateur d'offres RemoteOK (toutes les 12h)
+    startRemoteOKCron();
+    // Premier lancement immédiat RemoteOK
+    runRemoteOKFetcherJob().catch(console.error);
 });
