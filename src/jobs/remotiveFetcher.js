@@ -10,23 +10,36 @@ const openai = new OpenAI({
 });
 
 /**
- * Filtre IA : vérifie si l'offre est accessible directement sans abonnement
+ * Analyse l'offre avec DeepSeek :
+ * 1. Vérifie que l'offre est accessible directement (sans abonnement)
+ * 2. Extrait le lien direct de candidature depuis la description HTML
+ * 3. Génère un résumé neutre
  */
-async function isJobDirectlyAccessible(job) {
+async function analyzeJob(job) {
     try {
-        const prompt = `Tu analyses une offre d'emploi remote/freelance. Réponds UNIQUEMENT en JSON.
+        // Nettoyage du HTML pour extraire le texte brut
+        const cleanDescription = (job.description || '')
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .substring(0, 1500);
+
+        const prompt = `Tu analyses une offre d'emploi remote. Réponds UNIQUEMENT en JSON valide.
 
 Titre : ${job.title}
 Entreprise : ${job.company || 'Inconnue'}
-Description : ${(job.description || '').substring(0, 800)}
-URL de candidature : ${job.url || ''}
+Description :
+"""
+${cleanDescription}
+"""
 
-Questions :
-1. Est-ce que cette offre semble accessible DIRECTEMENT (sans abonnement payant ni inscription premium) ?
-2. Donne un résumé de 1-2 phrases sur la mission (sans mentionner de plateforme).
+Tâches :
+1. Trouve l'URL de candidature DIRECTE dans la description (lien vers Breezy, Greenhouse, Lever, Workable, Ashby, un site d'entreprise, etc.). Ce n'est PAS une URL de remotive.com ou jobicy.com. Si tu n'en trouves pas, retourne null.
+2. Est-ce que cette offre est accessible directement sans abonnement payant ? (true/false)
+3. Résume la mission en 1-2 phrases sans mentionner de plateforme de recrutement.
 
-Réponds en JSON strict :
+JSON attendu (STRICT) :
 {
+  "directApplyUrl": "https://..." ou null,
   "isDirectApply": true ou false,
   "summary": "Résumé ici..."
 }`;
@@ -34,17 +47,19 @@ Réponds en JSON strict :
         const response = await openai.chat.completions.create({
             model: 'deepseek-chat',
             messages: [
-                { role: 'system', content: 'Réponds uniquement en JSON valide.' },
+                { role: 'system', content: 'Réponds uniquement en JSON valide, sans texte autour.' },
                 { role: 'user', content: prompt }
             ],
             response_format: { type: 'json_object' }
         });
 
-        const result = JSON.parse(response.choices[0].message.content);
-        return result;
+        const rawContent = response.choices[0].message.content;
+        const cleanContent = rawContent.replace(/```json|```/g, '').trim();
+        return JSON.parse(cleanContent);
+
     } catch (err) {
-        // En cas d'erreur IA, on accepte l'offre par défaut
-        return { isDirectApply: true, summary: job.description?.substring(0, 150) || 'Offre remote.' };
+        console.error('[Remotive] Erreur DeepSeek:', err.message);
+        return { directApplyUrl: null, isDirectApply: true, summary: (job.description || '').substring(0, 150) };
     }
 }
 
@@ -64,29 +79,48 @@ async function fetchRemotiveJobs() {
     }
 }
 
+let isRunning = false;
+
 async function runRemotiveFetcherJob() {
-    console.log('💼 [CRON] Début de la récupération des offres Remotive...');
-    let isRunning = false;
-    if (isRunning) return;
+    if (isRunning) {
+        console.log('⚠️ [CRON] Remotive déjà en cours, ignoré.');
+        return;
+    }
     isRunning = true;
+    console.log('💼 [CRON] Début de la récupération des offres Remotive...');
 
     try {
         const jobs = await fetchRemotiveJobs();
         let addedCount = 0;
+        let skippedCount = 0;
 
         for (const job of jobs) {
             const jobId = `remotive-${job.id}`;
             const existing = db.get('bounties').find({ id: jobId }).value();
 
             if (existing) {
-                db.get('bounties').find({ id: jobId }).assign({
-                    lastActivityAt: new Date().toISOString()
-                }).write();
+                // Si l'entrée existe mais n'a pas encore de directApplyUrl, on re-vérifie
+                if (!existing.directApplyUrl) {
+                    const aiCheck = await analyzeJob({
+                        title: job.title,
+                        company: job.company_name,
+                        description: job.description,
+                    });
+                    db.get('bounties').find({ id: jobId }).assign({
+                        directApplyUrl: aiCheck.directApplyUrl,
+                        aiSummary: aiCheck.summary,
+                        lastActivityAt: new Date().toISOString(),
+                    }).write();
+                } else {
+                    db.get('bounties').find({ id: jobId }).assign({
+                        lastActivityAt: new Date().toISOString()
+                    }).write();
+                }
                 continue;
             }
 
-            // Filtre DeepSeek : on vérifie que l'offre est accessible directement
-            const aiCheck = await isJobDirectlyAccessible({
+            // Nouvelle offre : analyse DeepSeek complète
+            const aiCheck = await analyzeJob({
                 title: job.title,
                 company: job.company_name,
                 description: job.description,
@@ -94,7 +128,8 @@ async function runRemotiveFetcherJob() {
             });
 
             if (!aiCheck.isDirectApply) {
-                console.log(`⏭️  Offre ignorée (accès restreint) : ${job.title}`);
+                console.log(`⏭️  Ignorée (accès restreint) : ${job.title}`);
+                skippedCount++;
                 continue;
             }
 
@@ -104,7 +139,8 @@ async function runRemotiveFetcherJob() {
                 id: jobId,
                 title: job.title,
                 repo: 'Remotive',
-                url: job.url,
+                url: job.url,                                          // URL Remotive (référence)
+                directApplyUrl: aiCheck.directApplyUrl,                // URL directe extraite par IA
                 imageUrl: job.company_logo || null,
                 state: 'OPEN',
                 commentCount: 0,
@@ -118,11 +154,11 @@ async function runRemotiveFetcherJob() {
             }).write();
 
             addedCount++;
-            console.log(`✨ Remotive ajouté: ${job.title}`);
+            console.log(`✨ Remotive ajouté: ${job.title} → ${aiCheck.directApplyUrl || '(pas de lien direct)'}`);
             await new Promise(r => setTimeout(r, 600));
         }
 
-        console.log(`✅ [CRON] Remotive terminé : ${addedCount} ajoutées.`);
+        console.log(`✅ [CRON] Remotive terminé : ${addedCount} ajoutées, ${skippedCount} ignorées.`);
     } catch (err) {
         console.error('❌ [CRON] Erreur Remotive:', err);
     } finally {

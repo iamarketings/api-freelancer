@@ -10,23 +10,35 @@ const openai = new OpenAI({
 });
 
 /**
- * Filtre IA : vérifie si l'offre est accessible directement sans abonnement
+ * Analyse l'offre avec DeepSeek :
+ * 1. Vérifie l'accessibilité directe
+ * 2. Extrait l'URL directe de candidature depuis la description HTML
+ * 3. Génère un résumé neutre
  */
-async function isJobDirectlyAccessible(job) {
+async function analyzeJob(job) {
     try {
-        const prompt = `Tu analyses une offre d'emploi remote/freelance. Réponds UNIQUEMENT en JSON.
+        const cleanDescription = (job.description || '')
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .substring(0, 1500);
+
+        const prompt = `Tu analyses une offre d'emploi remote. Réponds UNIQUEMENT en JSON valide.
 
 Titre : ${job.title}
 Entreprise : ${job.company || 'Inconnue'}
-Description : ${(job.description || '').substring(0, 800)}
-URL : ${job.url || ''}
+Description :
+"""
+${cleanDescription}
+"""
 
-Questions :
-1. Est-ce que cette offre semble accessible DIRECTEMENT (sans abonnement payant ni inscription premium) ?
-2. Donne un résumé de 1-2 phrases sur la mission (sans mentionner de plateforme).
+Tâches :
+1. Trouve l'URL de candidature DIRECTE dans la description (Breezy, Greenhouse, Lever, Workable, Ashby, site entreprise...). PAS une URL jobicy.com. Si introuvable, retourne null.
+2. Est-ce accessible directement sans abonnement ? (true/false)
+3. Résumé 1-2 phrases sans mentionner de plateforme de recrutement.
 
-Réponds en JSON strict :
+JSON strict :
 {
+  "directApplyUrl": "https://..." ou null,
   "isDirectApply": true ou false,
   "summary": "Résumé ici..."
 }`;
@@ -34,15 +46,17 @@ Réponds en JSON strict :
         const response = await openai.chat.completions.create({
             model: 'deepseek-chat',
             messages: [
-                { role: 'system', content: 'Réponds uniquement en JSON valide.' },
+                { role: 'system', content: 'Réponds uniquement en JSON valide, sans texte autour.' },
                 { role: 'user', content: prompt }
             ],
             response_format: { type: 'json_object' }
         });
 
-        return JSON.parse(response.choices[0].message.content);
+        const rawContent = response.choices[0].message.content;
+        const cleanContent = rawContent.replace(/```json|```/g, '').trim();
+        return JSON.parse(cleanContent);
     } catch (err) {
-        return { isDirectApply: true, summary: (job.description || '').substring(0, 150) || 'Offre remote.' };
+        return { directApplyUrl: null, isDirectApply: true, summary: (job.description || '').substring(0, 150) };
     }
 }
 
@@ -88,7 +102,7 @@ async function runJobicyFetcherJob() {
                 continue;
             }
 
-            const aiCheck = await isJobDirectlyAccessible({
+            const aiCheck = await analyzeJob({
                 title: job.jobTitle,
                 company: job.companyName,
                 description: job.jobDescription,
@@ -96,7 +110,7 @@ async function runJobicyFetcherJob() {
             });
 
             if (!aiCheck.isDirectApply) {
-                console.log(`⏭️  Offre ignorée (accès restreint) : ${job.jobTitle}`);
+                console.log(`⏭️  Ignorée (accès restreint) : ${job.jobTitle}`);
                 continue;
             }
 
@@ -109,6 +123,7 @@ async function runJobicyFetcherJob() {
                 title: job.jobTitle,
                 repo: 'Jobicy',
                 url: job.url,
+                directApplyUrl: aiCheck.directApplyUrl,
                 imageUrl: job.companyLogo || null,
                 state: 'OPEN',
                 commentCount: 0,
@@ -122,7 +137,7 @@ async function runJobicyFetcherJob() {
             }).write();
 
             addedCount++;
-            console.log(`✨ Jobicy ajouté: ${job.jobTitle}`);
+            console.log(`✨ Jobicy ajouté: ${job.jobTitle} → ${aiCheck.directApplyUrl || '(pas de lien direct)'}`);
             await new Promise(r => setTimeout(r, 600));
         }
 
