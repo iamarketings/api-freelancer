@@ -4,7 +4,16 @@ const { fetchBountyIssues } = require('../services/githubService');
 const { analyzeBountyWithAI } = require('../services/aiSummarizer');
 const { calculateBountyScore } = require('../utils/scoringAlgo');
 
+// Verrou pour éviter que deux cycles CRON s'exécutent en même temps (Race Condition)
+let isRunning = false;
+
 async function runBountyFetcherJob() {
+    if (isRunning) {
+        console.log('⚠️ [CRON] Job déjà en cours, ce cycle est ignoré.');
+        return;
+    }
+
+    isRunning = true;
     console.log('🔄 [CRON] Début de la récupération des Bounties GitHub...');
 
     try {
@@ -84,6 +93,9 @@ async function runBountyFetcherJob() {
         }
     } catch (error) {
         console.error('❌ [CRON] Erreur générale :', error);
+    } finally {
+        // On libère toujours le verrou, même en cas d'erreur
+        isRunning = false;
     }
 
     console.log('✅ [CRON] Fin du cycle.');

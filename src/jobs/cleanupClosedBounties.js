@@ -14,8 +14,16 @@ const GITHUB_GRAPHQL_ENDPOINT = 'https://api.github.com/graphql';
 async function runCleanupJob() {
     console.log('🧹 [CRON] Début du nettoyage des anciens Bounties...');
 
-    // 1. Récupérer uniquement les Bounties ouverts
-    const openBounties = db.get('bounties').filter({ state: 'OPEN' }).value();
+    // 1. Récupérer uniquement les Bounties GitHub ouverts (ID commence par 'I_')
+    // Les IDs Devpost (devpost-XXXXX) et RemoteOK (remoteok-XXXXX) ne sont PAS des IDs GitHub valides
+    // Les envoyer à GraphQL retournerait null et les marquerait CLOSED à tort.
+    const allOpenBounties = db.get('bounties').filter({ state: 'OPEN' }).value();
+    const openBounties = allOpenBounties.filter(b => b.id && b.id.startsWith('I_'));
+    const skippedCount = allOpenBounties.length - openBounties.length;
+
+    if (skippedCount > 0) {
+        console.log(`🧹 [CRON] ${skippedCount} entrées non-GitHub ignorées (Devpost/RemoteOK).`);
+    }
 
     if (openBounties.length === 0) {
         console.log('🧹 [CRON] Aucun projet ouvert à vérifier.');

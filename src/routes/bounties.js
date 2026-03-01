@@ -17,11 +17,18 @@ router.get('/', (req, res) => {
         const limit = limitAllowed.includes(reqLimit) ? reqLimit : 50;
         const startIndex = (page - 1) * limit;
 
-        // On récupère et trie toutes les données valides
-        const allBounties = db.get('bounties')
+        // On récupère uniquement les bounties GitHub (pas les hackathons ni les offres remote)
+        // Sauf si ?type=all est passé en paramètre
+        const showAll = req.query.type === 'all';
+        let allBounties = db.get('bounties')
             .filter({ isScam: 0, state: 'OPEN' })
             .orderBy(['score'], ['desc'])
             .value();
+
+        if (!showAll) {
+            // On exclut les entrées Devpost et RemoteOK
+            allBounties = allBounties.filter(b => b.repo !== 'Devpost' && b.repo !== 'RemoteOK');
+        }
 
         // On applique la pagination en découpant le tableau
         const paginatedBounties = allBounties.slice(startIndex, startIndex + limit);
