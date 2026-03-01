@@ -34,10 +34,11 @@ app.listen(PORT, () => {
     startCleanupCron();
     // Démarrage du récupérateur de Hackathons Devpost (toutes les 6h)
     startHackathonCron();
-    // Premier lancement immédiat Hackathons
-    runHackathonFetcherJob().catch(console.error);
+    // Premier lancement décalé de 10s pour ne pas saturer la DB au démarrage
+    setTimeout(() => runHackathonFetcherJob().catch(console.error), 10000);
+
     // Démarrage du récupérateur d'offres RemoteOK (toutes les 12h)
     startRemoteOKCron();
-    // Premier lancement immédiat RemoteOK
-    runRemoteOKFetcherJob().catch(console.error);
+    // Premier lancement décalé de 30s (après Hackathons) pour éviter les écritures simultanées
+    setTimeout(() => runRemoteOKFetcherJob().catch(console.error), 30000);
 });

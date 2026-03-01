@@ -32,7 +32,7 @@ async function fetchDevpostHackathons() {
 
         } catch (error) {
             console.error(`[Devpost API] Erreur page ${page}:`, error.message);
-            break;
+            continue; // On continue sur la page suivante même en cas de hoquet réseau
         }
     }
 
