@@ -7,7 +7,7 @@ const { startRemotiveCron, runRemotiveFetcherJob } = require('./src/jobs/remotiv
 const { startJobicyCron, runJobicyFetcherJob } = require('./src/jobs/jobicyFetcher');
 const bountiesRouter = require('./src/routes/bounties');
 const hackathonRouter = require('./src/routes/hackathon');
-const freelanceRouter = require('./src/routes/freelance');
+const jobsRouter = require('./src/routes/jobs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,7 +18,7 @@ app.use(express.json());
 // Routes
 app.use('/api/projet', bountiesRouter);       // GitHub bounties uniquement
 app.use('/api/hackathon', hackathonRouter);   // Hackathons Devpost
-app.use('/api/freelance', freelanceRouter);   // Offres Remotive + Jobicy (accès direct)
+app.use('/api/jobs', jobsRouter);             // Emplois remote (Remotive + Jobicy)
 
 // Route de base
 app.get('/', (req, res) => {
