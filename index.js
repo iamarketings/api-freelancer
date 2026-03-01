@@ -4,6 +4,7 @@ const { startCronJobs } = require('./src/jobs/bountyFetcher');
 const { startCleanupCron } = require('./src/jobs/cleanupClosedBounties');
 const { startHackathonCron, runHackathonFetcherJob } = require('./src/jobs/hackathonFetcher');
 const bountiesRouter = require('./src/routes/bounties');
+const hackathonRouter = require('./src/routes/hackathon');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,6 +14,7 @@ app.use(express.json());
 
 // Routes
 app.use('/api/projet', bountiesRouter);
+app.use('/api/hackathon', hackathonRouter);
 
 // Handler Route de base
 app.get('/', (req, res) => {
