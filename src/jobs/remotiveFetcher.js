@@ -1,7 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const cron = require('node-cron');
-const db = require('../db/database');
+const supabase = require('../db/supabase');
 const { OpenAI } = require('openai');
 require('dotenv').config();
 
@@ -141,7 +141,7 @@ let isRunning = false;
 async function runRemotiveFetcherJob() {
     if (isRunning) return;
     isRunning = true;
-    console.log('💼 [CRON] Début Enrichment Profond Remotive (Worker Pool)...');
+    console.log('💼 [CRON] Début Enrichment Profond Remotive (Supabase)...');
 
     try {
         const jobs = await fetchRemotiveJobs();
@@ -149,9 +149,15 @@ async function runRemotiveFetcherJob() {
 
         for (const job of jobs) {
             const jobId = `remotive-${job.id}`;
-            const existing = db.get('bounties').find({ id: jobId }).value();
 
-            if (existing && existing.enriched) continue;
+            // Vérifier si déjà enrichi dans Supabase
+            const { data: existing } = await supabase
+                .from('opportunities')
+                .select('enriched_data')
+                .eq('id', jobId)
+                .single();
+
+            if (existing && existing.enriched_data) continue;
 
             const task = async () => {
                 console.log(`🔍 [Worker] Scraping & AI : ${job.title}...`);
@@ -163,28 +169,31 @@ async function runRemotiveFetcherJob() {
                 const jobData = {
                     id: jobId,
                     title: job.title,
-                    repo: 'Remotive',
+                    source: 'Remotive',
                     url: job.url,
-                    directApplyUrl: analysis.directApplyUrl || job.url,
-                    imageUrl: job.company_logo || null,
+                    direct_apply_url: analysis.directApplyUrl || job.url,
+                    image_url: job.company_logo || null,
                     state: 'OPEN',
-                    commentCount: 0,
-                    createdAt: new Date(job.publication_date || new Date()).toISOString(),
-                    lastActivityAt: new Date().toISOString(),
-                    labels: JSON.stringify(analysis.labels || []),
+                    comment_count: 0,
+                    created_at: new Date(job.publication_date || new Date()).toISOString(),
+                    last_activity_at: new Date().toISOString(),
+                    labels: analysis.labels || [],
                     score: 75,
-                    aiSummary: analysis.enriched.summary,
-                    isScam: 0,
-                    discoveredAt: new Date().toISOString(),
-                    enriched: analysis.enriched
+                    ai_summary: analysis.enriched.summary,
+                    is_scam: false,
+                    discovered_at: new Date().toISOString(),
+                    enriched_data: analysis.enriched
                 };
 
-                if (existing) {
-                    db.get('bounties').find({ id: jobId }).assign(jobData).write();
+                const { error } = await supabase
+                    .from('opportunities')
+                    .upsert(jobData, { onConflict: 'id' });
+
+                if (error) {
+                    console.error(`❌ [Supabase] Erreur upsert ${jobId}:`, error.message);
                 } else {
-                    db.get('bounties').push(jobData).write();
+                    console.log(`✨ [Worker] Enrichi & Sauvegardé : ${job.title}`);
                 }
-                console.log(`✨ [Worker] Enrichi : ${job.title}`);
             };
 
             // Ajout au pool de workers (limité à 5)

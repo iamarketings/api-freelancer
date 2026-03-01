@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const db = require('../db/database');
+const supabase = require('../db/supabase');
 const { fetchBountyIssues } = require('../services/githubService');
 const { analyzeBountyWithAI } = require('../services/aiSummarizer');
 const { calculateBountyScore } = require('../utils/scoringAlgo');
@@ -14,7 +14,7 @@ async function runBountyFetcherJob() {
     }
 
     isRunning = true;
-    console.log('🔄 [CRON] Début de la récupération des Bounties GitHub...');
+    console.log('🔄 [CRON] Début de la récupération des Bounties GitHub (Supabase)...');
 
     try {
         const issues = await fetchBountyIssues();
@@ -35,19 +35,24 @@ async function runBountyFetcherJob() {
                 continue;
             }
 
-            const existingBounty = db.get('bounties').find({ id: issue.id }).value();
+            const { data: existingBounty } = await supabase
+                .from('opportunities')
+                .select('id')
+                .eq('id', issue.id)
+                .single();
+
             const currentScore = calculateBountyScore(issue);
 
             if (existingBounty) {
-                db.get('bounties')
-                    .find({ id: issue.id })
-                    .assign({
+                await supabase
+                    .from('opportunities')
+                    .update({
                         state: issue.state,
-                        commentCount: issue.comments.totalCount,
-                        lastActivityAt: new Date(issue.updatedAt).toISOString(),
+                        comment_count: issue.comments.totalCount,
+                        last_activity_at: new Date(issue.updatedAt).toISOString(),
                         score: currentScore,
                     })
-                    .write();
+                    .eq('id', issue.id);
             } else {
                 newIssuesToProcess.push({ issue, currentScore });
             }
@@ -63,26 +68,33 @@ async function runBountyFetcherJob() {
                 const aiAnalysis = await analyzeBountyWithAI(issue);
 
                 const finalScore = aiAnalysis.isScam ? 0 : currentScore;
-                const labelsStr = JSON.stringify(issue.labels.nodes.map(l => l.name));
+                const labels = issue.labels.nodes.map(l => l.name);
 
                 const newBounty = {
                     id: issue.id,
                     title: issue.title,
-                    repo: issue.repository.nameWithOwner,
+                    source: issue.repository.nameWithOwner,
                     url: issue.url,
                     state: issue.state,
-                    commentCount: issue.comments.totalCount,
-                    createdAt: new Date(issue.createdAt).toISOString(),
-                    lastActivityAt: new Date(issue.updatedAt).toISOString(),
-                    labels: labelsStr,
+                    comment_count: issue.comments.totalCount,
+                    created_at: new Date(issue.createdAt).toISOString(),
+                    last_activity_at: new Date(issue.updatedAt).toISOString(),
+                    labels: labels,
                     score: finalScore,
-                    aiSummary: aiAnalysis.summary,
-                    isScam: aiAnalysis.isScam ? 1 : 0,
-                    discoveredAt: new Date().toISOString()
+                    ai_summary: aiAnalysis.summary,
+                    is_scam: aiAnalysis.isScam,
+                    discovered_at: new Date().toISOString()
                 };
 
-                db.get('bounties').push(newBounty).write();
-                console.log(`✨ Projet validé (${i + 1}/${newIssuesToProcess.length}): ${issue.title} (Scam: ${aiAnalysis.isScam})`);
+                const { error } = await supabase
+                    .from('opportunities')
+                    .insert(newBounty);
+
+                if (error) {
+                    console.error(`❌ [Supabase] Erreur insertion bounty ${issue.id}:`, error.message);
+                } else {
+                    console.log(`✨ Projet validé (${i + 1}/${newIssuesToProcess.length}): ${issue.title} (Scam: ${aiAnalysis.isScam})`);
+                }
 
                 // Optionnel : petite pause entre chaque appel pour être encore plus sûr
                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -92,7 +104,7 @@ async function runBountyFetcherJob() {
             }
         }
     } catch (error) {
-        console.error('❌ [CRON] Erreur générale :', error);
+        console.error('❌ [CRON] Erreur générale :', error.message);
     } finally {
         // On libère toujours le verrou, même en cas d'erreur
         isRunning = false;

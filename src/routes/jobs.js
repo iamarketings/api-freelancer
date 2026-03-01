@@ -1,45 +1,54 @@
 const express = require('express');
-const db = require('../db/database');
+const supabase = require('../db/supabase');
 const router = express.Router();
 
 /**
  * GET /api/jobs
  * Offres d'emploi remote (Remotive + Jobicy) avec pagination
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limitAllowed = [10, 50, 100];
         let reqLimit = parseInt(req.query.limit) || 50;
         const limit = limitAllowed.includes(reqLimit) ? reqLimit : 50;
-        const startIndex = (page - 1) * limit;
 
-        const allJobs = db.get('bounties')
-            .filter(b => b.state === 'OPEN' && (b.repo === 'Remotive' || b.repo === 'Jobicy'))
-            .orderBy(['score'], ['desc'])
-            .value();
+        const from = (page - 1) * limit;
+        const to = from + limit - 1;
 
-        const paginated = allJobs.slice(startIndex, startIndex + limit);
+        const { data, error, count } = await supabase
+            .from('opportunities')
+            .select('*', { count: 'exact' })
+            .in('source', ['Remotive', 'Jobicy'])
+            .eq('state', 'OPEN')
+            .order('score', { ascending: false })
+            .range(from, to);
 
-        const formatted = paginated.map(b => ({
-            ...b,
-            labels: JSON.parse(b.labels),
-            isScam: Boolean(b.isScam),
-            enriched: b.enriched || null
-        }));
+        if (error) throw error;
 
         res.json({
             success: true,
             page,
             limit,
-            totalPages: Math.ceil(allJobs.length / limit),
-            totalItems: allJobs.length,
-            count: formatted.length,
-            data: formatted,
+            totalPages: Math.ceil(count / limit),
+            totalItems: count,
+            count: data.length,
+            data: data.map(item => ({
+                ...item,
+                repo: item.source,
+                directApplyUrl: item.direct_apply_url,
+                imageUrl: item.image_url,
+                commentCount: item.comment_count,
+                createdAt: item.created_at,
+                lastActivityAt: item.last_activity_at,
+                aiSummary: item.ai_summary,
+                isScam: item.is_scam,
+                enriched: item.enriched_data || null
+            })),
         });
 
     } catch (error) {
-        console.error("Erreur Fetch Jobs LowDB :", error);
+        console.error("Erreur Fetch Jobs Supabase :", error.message);
         res.status(500).json({ success: false, error: "Erreur Serveur." });
     }
 });

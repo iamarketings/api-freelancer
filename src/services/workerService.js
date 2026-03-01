@@ -1,4 +1,4 @@
-const db = require('../db/database');
+// const db = require('../db/database'); // Removed legacy LowDB import
 
 class WorkerPool {
     constructor(maxWorkers = 5) {

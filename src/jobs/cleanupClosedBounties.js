@@ -1,6 +1,6 @@
 const axios = require('axios');
 const cron = require('node-cron');
-const db = require('../db/database');
+const supabase = require('../db/supabase');
 require('dotenv').config();
 
 const GITHUB_GRAPHQL_ENDPOINT = 'https://api.github.com/graphql';
@@ -8,57 +8,49 @@ const GITHUB_GRAPHQL_ENDPOINT = 'https://api.github.com/graphql';
 /**
  * Ce CRON s'occupe du "Nettoyage" (Cleanup). 
  * Il récupère tous les projets actuellement 
- * stockés comme 'OPEN' dans dev.json et demande à GitHub 
+ * stockés comme 'OPEN' dans Supabase et demande à GitHub 
  * leur vrai statut actuel en temps réel.
  */
 async function runCleanupJob() {
-    console.log('🧹 [CRON] Début du nettoyage des anciens Bounties...');
+    console.log('🧹 [CRON] Début du nettoyage des anciens Bounties (Supabase)...');
 
-    // 1. Récupérer uniquement les Bounties GitHub ouverts (ID commence par 'I_')
-    // Les IDs Devpost (devpost-XXXXX) et RemoteOK (remoteok-XXXXX) ne sont PAS des IDs GitHub valides
-    // Les envoyer à GraphQL retournerait null et les marquerait CLOSED à tort.
-    const allOpenBounties = db.get('bounties').filter({ state: 'OPEN' }).value();
-    const openBounties = allOpenBounties.filter(b => b.id && b.id.startsWith('I_'));
-    const skippedCount = allOpenBounties.length - openBounties.length;
+    try {
+        // 1. Récupérer uniquement les Bounties GitHub ouverts
+        // On considère que si la source contient un "/", c'est un repo GitHub nameWithOwner
+        const { data: openBounties, error: fetchError } = await supabase
+            .from('opportunities')
+            .select('id, source')
+            .eq('state', 'OPEN')
+            .like('source', '%/%');
 
-    if (skippedCount > 0) {
-        console.log(`🧹 [CRON] ${skippedCount} entrées non-GitHub ignorées (Devpost/RemoteOK).`);
-    }
+        if (fetchError) throw fetchError;
 
-    if (openBounties.length === 0) {
-        console.log('🧹 [CRON] Aucun projet ouvert à vérifier.');
-        return;
-    }
+        if (!openBounties || openBounties.length === 0) {
+            console.log('🧹 [CRON] Aucun projet ouvert à vérifier.');
+            return;
+        }
 
-    console.log(`🧹 [CRON] ${openBounties.length} projets ouverts à vérifier sur GitHub...`);
+        console.log(`🧹 [CRON] ${openBounties.length} projets ouverts à vérifier sur GitHub...`);
 
-    // L'API GraphQL permet de requêter des "nœuds" par leur ID global
-    // On peut demander 100 nœuds à la fois
-    const CHUNK_SIZE = 100;
+        const CHUNK_SIZE = 100;
+        for (let i = 0; i < openBounties.length; i += CHUNK_SIZE) {
+            const batch = openBounties.slice(i, i + CHUNK_SIZE);
+            const nodeIds = batch.map(b => b.id);
 
-    for (let i = 0; i < openBounties.length; i += CHUNK_SIZE) {
-        const batch = openBounties.slice(i, i + CHUNK_SIZE);
-        const nodeIds = batch.map(b => b.id);
-
-        // Requête GraphQL demandant spécifiquement le statut de ces IDs
-        const query = `
-          query($ids: [ID!]!) {
-            nodes(ids: $ids) {
-              ... on Issue {
-                id
-                state
+            const query = `
+              query($ids: [ID!]!) {
+                nodes(ids: $ids) {
+                  ... on Issue {
+                    id
+                    state
+                  }
+                }
               }
-            }
-          }
-        `;
+            `;
 
-        try {
             const response = await axios.post(
                 GITHUB_GRAPHQL_ENDPOINT,
-                {
-                    query,
-                    variables: { ids: nodeIds }
-                },
+                { query, variables: { ids: nodeIds } },
                 {
                     headers: {
                         'Authorization': `bearer ${process.env.GITHUB_TOKEN}`,
@@ -74,31 +66,28 @@ async function runCleanupJob() {
 
             const nodes = response.data.data.nodes;
 
-            let closedCount = 0;
+            for (let j = 0; j < nodes.length; j++) {
+                const node = nodes[j];
+                const originalBounty = batch[j];
 
-            // 2. Parcourir les nœuds retournés par GitHub
-            nodes.forEach((node, index) => {
-                // Si le node est null, c'est que l'issue a été complètement supprimée par son créateur (404)
-                // Si l'état a changé en CLOSED, on met à jour.
+                // Si le node est null (404) ou CLOSED
                 if (!node || node.state === 'CLOSED') {
-                    const bountyIdTarget = batch[index].id;
+                    const { error: updateError } = await supabase
+                        .from('opportunities')
+                        .update({ state: 'CLOSED', last_activity_at: new Date().toISOString() })
+                        .eq('id', originalBounty.id);
 
-                    db.get('bounties')
-                        .find({ id: bountyIdTarget })
-                        .assign({ state: 'CLOSED', lastActivityAt: new Date().toISOString() })
-                        .write();
-
-                    closedCount++;
+                    if (updateError) {
+                        console.error(`❌ [Supabase] Erreur cleanup ID ${originalBounty.id}:`, updateError.message);
+                    } else {
+                        console.log(`🧹 [CRON] Projet clos/supprimé : ${originalBounty.id}`);
+                    }
                 }
-            });
-
-            if (closedCount > 0) {
-                console.log(`🧹 [CRON] ${closedCount} projets ont été clos/supprimés sur GitHub. Base mise à jour.`);
             }
-
-        } catch (error) {
-            console.error("🧹 [CRON] Erreur appel API Cleanup:", error.message);
         }
+
+    } catch (error) {
+        console.error("🧹 [CRON] Erreur générale Cleanup :", error.message);
     }
 
     console.log('✅ 🧹 [CRON] Fin du nettoyage.');

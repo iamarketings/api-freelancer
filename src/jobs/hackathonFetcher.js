@@ -1,6 +1,6 @@
 const axios = require('axios');
 const cron = require('node-cron');
-const db = require('../db/database');
+const supabase = require('../db/supabase');
 require('dotenv').config();
 
 /**
@@ -54,7 +54,7 @@ function calculateHackathonScore(hack) {
 }
 
 async function runHackathonFetcherJob() {
-    console.log('🌐 [CRON] Début de la récupération des Hackathons Devpost...');
+    console.log('🌐 [CRON] Début de la récupération des Hackathons Devpost (Supabase)...');
 
     try {
         const hackathons = await fetchDevpostHackathons();
@@ -80,39 +80,38 @@ async function runHackathonFetcherJob() {
             if (prizeStr) summary += ` Prix : ${prizeStr}.`;
             if (dates) summary += ` Dates : ${dates}.`;
 
-            const existing = db.get('bounties').find({ id: hackId }).value();
+            const hackData = {
+                id: hackId,
+                title: `[Hackathon] ${hack.title}`,
+                source: 'Devpost',
+                url: hack.url || `https://devpost.com/hackathons/${hack.id}`,
+                image_url: imageUrl,
+                state: 'OPEN',
+                comment_count: hack.registrations_count || 0,
+                created_at: new Date().toISOString(),
+                last_activity_at: new Date().toISOString(),
+                labels: ['hackathon', 'devpost'],
+                score,
+                ai_summary: summary,
+                is_scam: false,
+                discovered_at: new Date().toISOString()
+            };
 
-            if (existing) {
-                db.get('bounties')
-                    .find({ id: hackId })
-                    .assign({ state: 'OPEN', lastActivityAt: new Date().toISOString(), score, imageUrl, aiSummary: summary })
-                    .write();
-                updatedCount++;
+            const { error } = await supabase
+                .from('opportunities')
+                .upsert(hackData, { onConflict: 'id' });
+
+            if (error) {
+                console.error(`❌ [Supabase] Erreur upsert hackathon ${hackId}:`, error.message);
             } else {
-                db.get('bounties').push({
-                    id: hackId,
-                    title: `[Hackathon] ${hack.title}`,
-                    repo: 'Devpost',
-                    url: hack.url || `https://devpost.com/hackathons/${hack.id}`,
-                    imageUrl,
-                    state: 'OPEN',
-                    commentCount: hack.registrations_count || 0,
-                    createdAt: new Date().toISOString(),
-                    lastActivityAt: new Date().toISOString(),
-                    labels: JSON.stringify(['hackathon', 'devpost']),
-                    score,
-                    aiSummary: summary,
-                    isScam: 0,
-                    discoveredAt: new Date().toISOString(),
-                }).write();
+                console.log(`✨ Hackathon traité : ${hack.title}`);
                 addedCount++;
-                console.log(`✨ Hackathon ajouté: ${hack.title} (Score: ${score})`);
             }
         }
 
-        console.log(`✅ [CRON] Devpost terminé : ${addedCount} ajoutés, ${updatedCount} mis à jour.`);
+        console.log(`✅ [CRON] Devpost terminé : ${addedCount + updatedCount} hackathons traités.`);
     } catch (error) {
-        console.error('❌ [CRON] Erreur récupération Devpost :', error);
+        console.error('❌ [CRON] Erreur récupération Devpost :', error.message);
     }
 }
 

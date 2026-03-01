@@ -1,57 +1,61 @@
 const express = require('express');
-const db = require('../db/database');
+const supabase = require('../db/supabase');
 const router = express.Router();
 
 /**
  * GET /api/projet
  * Retourne la liste des projets avec pagination (?page=1&limit=50)
  */
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
     try {
-        // Paramètres de pagination avec valeurs par défaut
         const page = parseInt(req.query.page) || 1;
         const limitAllowed = [10, 50, 100];
         let reqLimit = parseInt(req.query.limit) || 50;
-
-        // Restriction de la limite aux valeurs demandées
         const limit = limitAllowed.includes(reqLimit) ? reqLimit : 50;
-        const startIndex = (page - 1) * limit;
 
-        // On récupère uniquement les bounties GitHub (pas les hackathons ni les offres remote)
-        // Sauf si ?type=all est passé en paramètre
+        const from = (page - 1) * limit;
+        const to = from + limit - 1;
+
         const showAll = req.query.type === 'all';
-        let allBounties = db.get('bounties')
-            .filter({ isScam: 0, state: 'OPEN' })
-            .orderBy(['score'], ['desc'])
-            .value();
+
+        let query = supabase
+            .from('opportunities')
+            .select('*', { count: 'exact' })
+            .eq('state', 'OPEN')
+            .eq('is_scam', false)
+            .order('score', { ascending: false });
 
         if (!showAll) {
-            // On exclut les entrées Devpost et RemoteOK
-            allBounties = allBounties.filter(b => b.repo !== 'Devpost' && b.repo !== 'RemoteOK');
+            // Filtrer pour n'avoir que GitHub (on exclut les plateformes connues)
+            query = query.not('source', 'in', '("Remotive","Jobicy","Devpost")');
         }
 
-        // On applique la pagination en découpant le tableau
-        const paginatedBounties = allBounties.slice(startIndex, startIndex + limit);
+        const { data, error, count } = await query.range(from, to);
 
-        // On re-parse le JSON des labels
-        const formattedBounties = paginatedBounties.map(b => ({
-            ...b,
-            labels: JSON.parse(b.labels),
-            isScam: Boolean(b.isScam)
-        }));
+        if (error) throw error;
 
         res.json({
             success: true,
             page: page,
             limit: limit,
-            totalPages: Math.ceil(allBounties.length / limit),
-            totalItems: allBounties.length,
-            count: formattedBounties.length,
-            data: formattedBounties
+            totalPages: Math.ceil(count / limit),
+            totalItems: count,
+            count: data.length,
+            data: data.map(item => ({
+                ...item,
+                repo: item.source,
+                directApplyUrl: item.direct_apply_url,
+                imageUrl: item.image_url,
+                commentCount: item.comment_count,
+                createdAt: item.created_at,
+                lastActivityAt: item.last_activity_at,
+                aiSummary: item.ai_summary,
+                isScam: item.is_scam
+            }))
         });
 
     } catch (error) {
-        console.error("Erreur Fetch Bounties LowDB :", error);
+        console.error("Erreur Fetch Bounties Supabase :", error.message);
         res.status(500).json({ success: false, error: "Erreur Serveur." });
     }
 });
