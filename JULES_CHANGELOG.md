@@ -39,3 +39,8 @@ Le code est maintenant plus propre et la dette technique réduite. Tout ajout de
 - **Scraper Logic:** Fetchers now immediately qualify raw data using `aiQualifier.js` via DeepSeek and score it with `leadScoringAlgo.js` before inserting into Supabase (`upsert` via `opportunities` table). Replaced standalone unified scraper logic to keep the Express app as the main orchestrator via `node-cron`.
 - **API Endpoints:** Updated `src/controllers/opportunitiesController.js` to return all new V2 fields (like `contact`, `budget`, `summaryFr`, etc.) while ensuring backward compatibility with frontend queries.
 - **Removed:** Removed obsolete scripts `src/jobs/phase1_scraper.js`, `src/jobs/phase2_qualifier.js`, `src/jobs/unified_scraper.js`, `src/jobs/remotiveFetcher.js`, and `src/jobs/jobicyFetcher.js`.
+
+### Changed (Update)
+- **Bug Fix:** Fixed a critical bug in scrapers where `qualified.id` was passed to Supabase (which is null since `aiQualifier.js` does not return the original ID), causing a constraint violation. Scrapers now correctly pass `lead.id`.
+- **Database Architecture:** Decoupled the Node.js API to use the Supabase `queue` table instead of direct inserts. The fetchers now strictly fetch raw APIs and store rows in the `queue`.
+- **Worker Configuration:** Reintroduced an AI Worker (`aiWorker.js`) to decouple DeepSeek qualification from the fetchers to avoid API timeout/memory exhaustion on large fetch volumes. The worker is scheduled via `index.js` to process up to 50 queue items every 10 minutes.

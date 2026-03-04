@@ -2,8 +2,6 @@ const cron = require('node-cron');
 const axios = require('axios');
 const Parser = require('rss-parser');
 const supabase = require('../db/supabase');
-const { qualifyLeadWithAI, scrapeJobPage } = require('./aiQualifier');
-const { calculateLeadScore } = require('./leadScoringAlgo');
 
 let isRunning = false;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -76,6 +74,7 @@ async function fetchRSSAndReddit() {
                     created_at: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
                     preview: textContent.substring(0, 800),
                     type: feed.type,
+                    qualified: false
                 });
             }
         } catch (err) { console.error(`   ❌ Erreur RSS ${feed.source}: ${err.message}`); }
@@ -103,6 +102,7 @@ async function fetchRSSAndReddit() {
                     preview: (post.selftext || '').substring(0, 800),
                     type: 'freelance',
                     extra_data: { upvotes: post.ups },
+                    qualified: false
                 });
             }
             await sleep(1500); // Rate limit
@@ -112,35 +112,6 @@ async function fetchRSSAndReddit() {
     return newLeads;
 }
 
-// Validation logic for Job contacts
-const PLATFORM_DOMAINS = [
-    'remoteok.com', 'weworkremotely.com', 'remotive.com', 'jobicy.com',
-    'reddit.com', 'devpost.com', 'linkedin.com', 'indeed.com',
-    'glassdoor.com', 'wellfound.com', 'angel.co', 'simplyhired.com',
-    'ziprecruiter.com', 'monster.com', 'lever.co', 'greenhouse.io',
-    'workable.com', 'bamboohr.com', 'ashbyhq.com', 'smartrecruiters.com',
-];
-
-function isPlatformUrl(url = '') {
-    if (!url) return false;
-    try {
-        const parsed = new URL(url);
-        const hostname = parsed.hostname.replace('www.', '');
-        return PLATFORM_DOMAINS.some(d => hostname === d || hostname.endsWith(`.${d}`));
-    } catch { return false; }
-}
-
-function sanitizeContact(contact = {}) {
-    if (typeof contact !== 'object' || contact === null) return {};
-    const cleaned = { ...contact };
-    if (cleaned.external_link && isPlatformUrl(cleaned.external_link)) cleaned.external_link = null;
-    if (cleaned.website && isPlatformUrl(cleaned.website)) cleaned.website = null;
-    for (const key of ['email', 'telegram', 'discord']) {
-        if (cleaned[key] === '') cleaned[key] = null;
-    }
-    return cleaned;
-}
-
 async function runRSSFetcherJob() {
     if (isRunning) {
         console.log('⚠️ [CRON] Job RSS déjà en cours, cycle ignoré.');
@@ -148,92 +119,27 @@ async function runRSSFetcherJob() {
     }
 
     isRunning = true;
-    console.log('🔄 [CRON] Début de la récupération des Flux RSS et Reddit (Supabase)...');
+    console.log('🔄 [CRON] Début de la récupération des Flux RSS et Reddit...');
 
     try {
         const issues = await fetchRSSAndReddit();
         console.log(`[CRON] ${issues.length} leads trouvés.`);
 
-        // Récupérer les IDs déjà en base
-        const { data: existingData } = await supabase.from('opportunities').select('id, score').in('id', issues.map(i => i.id));
-        const existingIds = new Set(existingData?.map(r => r.id) || []);
+        if (issues.length === 0) return;
 
-        const newIssuesToProcess = issues.filter(issue => !existingIds.has(issue.id));
+        const { error } = await supabase.from('queue').upsert(issues, { onConflict: 'id', ignoreDuplicates: true });
 
-        console.log(`🤖 ${newIssuesToProcess.length} nouveaux leads RSS à évaluer avec l'IA...`);
-
-        // Traitement séquentiel
-        for (let i = 0; i < newIssuesToProcess.length; i++) {
-            const lead = newIssuesToProcess[i];
-
-            try {
-                // Scraping optionnel pour Upwork/RemoteOK
-                let scrapedContent = null;
-                if (lead.url && !lead.source.includes('r/')) {
-                    console.log(`   🌐 HTML -> MD : ${lead.url.substring(0, 60)}...`);
-                    scrapedContent = await scrapeJobPage(lead.url);
-                }
-
-                const qualified = await qualifyLeadWithAI(lead, scrapedContent);
-
-                if (!qualified || qualified.ai_error) {
-                     console.log(`[RSS] ⚠️  Erreur IA ou ignoré — ${lead.title}`);
-                     await sleep(500);
-                     continue;
-                }
-
-                qualified.contact = sanitizeContact(qualified.contact);
-
-                const hasEmail = Boolean(qualified.contact.email && qualified.contact.email.includes('@'));
-                if (!hasEmail) {
-                     console.log(`[RSS] 📧 Attention pas d'email direct trouvé : ${qualified.title.substring(0, 30)}`);
-                }
-
-                qualified.score = calculateLeadScore(qualified);
-
-                const opportunityData = {
-                    id: qualified.id,
-                    title: qualified.title,
-                    source: qualified.source,
-                    url: qualified.url,
-                    image_url: null,
-                    state: 'OPEN',
-                    comment_count: lead.extra_data?.upvotes || 0,
-                    created_at: qualified.created_at || new Date().toISOString(),
-                    last_activity_at: new Date().toISOString(),
-                    labels: [qualified.type, 'freelance'],
-                    score: qualified.score,
-                    ai_summary: qualified.summary || '',
-                    is_scam: qualified.is_scam || false,
-                    discovered_at: new Date().toISOString(),
-                    contact: qualified.contact || null,
-                    budget: qualified.budget || null,
-                    skills: qualified.skills || [],
-                    summary_fr: qualified.summary_fr || '',
-                    enriched: qualified.enriched || null
-                };
-
-                const { error } = await supabase.from('opportunities').upsert(opportunityData, { onConflict: 'id' });
-
-                if (error) {
-                    console.error(`❌ [Supabase] Erreur upsert RSS lead ${lead.id}:`, error.message);
-                } else {
-                    console.log(`✨ RSS validé (${i + 1}/${newIssuesToProcess.length}): ${lead.title} (Score: ${qualified.score})`);
-                }
-
-                await sleep(3000);
-
-            } catch (err) {
-                console.error(`Erreur IA sur le RSS ${lead.id}:`, err.message);
-            }
+        if (error) {
+            console.error(`❌ [Supabase] Erreur insertion queue (RSS):`, error.message);
+        } else {
+            console.log(`✅ [CRON] ${issues.length} leads RSS envoyés dans la file d'attente (Queue) Supabase.`);
         }
+
     } catch (error) {
         console.error('❌ [CRON] Erreur générale RSS :', error.message);
     } finally {
         isRunning = false;
     }
-
-    console.log('✅ [CRON] Fin du cycle RSS.');
 }
 
 function startRSSCron() {
