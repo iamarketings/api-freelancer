@@ -44,3 +44,6 @@ Le code est maintenant plus propre et la dette technique réduite. Tout ajout de
 - **Bug Fix:** Fixed a critical bug in scrapers where `qualified.id` was passed to Supabase (which is null since `aiQualifier.js` does not return the original ID), causing a constraint violation. Scrapers now correctly pass `lead.id`.
 - **Database Architecture:** Decoupled the Node.js API to use the Supabase `queue` table instead of direct inserts. The fetchers now strictly fetch raw APIs and store rows in the `queue`.
 - **Worker Configuration:** Reintroduced an AI Worker (`aiWorker.js`) to decouple DeepSeek qualification from the fetchers to avoid API timeout/memory exhaustion on large fetch volumes. The worker is scheduled via `index.js` to process up to 50 queue items every 10 minutes.
+
+### Changed (Update - Cost Control)
+- **AI Qualification:** Removed paid models (`google/gemini-2.0-flash-001`, `deepseek/deepseek-chat`) and `openrouter/auto` from the `FALLBACK_MODELS` list in `aiQualifier.js`. The fallback logic now exclusively uses 100% free models (`:free`) to prevent unintended usage costs on OpenRouter.

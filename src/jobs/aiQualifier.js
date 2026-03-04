@@ -22,14 +22,11 @@ try { jsonrepair = require('jsonrepair').jsonrepair; } catch { }
 const PRIMARY_MODEL = process.env.AI_MODEL || 'google/gemma-3-27b-it:free';
 const FALLBACK_MODELS = [
     'google/gemma-3-27b-it:free',
-    'google/gemini-2.0-flash-001',
     'meta-llama/llama-3.3-70b-instruct:free',
     'qwen/qwen-2.5-72b-instruct:free',
-    'deepseek/deepseek-chat',
     'mistralai/mistral-7b-instruct:free',
     'microsoft/phi-3-medium-128k-instruct:free',
     'openrouter/free',
-    'openrouter/auto',
 ];
 
 const openai = new OpenAI({
