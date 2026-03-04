@@ -88,9 +88,10 @@ src/
 │   ├── githubService.js          # GraphQL Engine
 │   └── aiSummarizer.js           # DeepSeek Engine
 ├── db/
-│   └── database.js               # LowDB Storage
-└── utils/
-    └── scoringAlgo.js            # Ranking Engine
+│   ├── supabase.js               # Supabase Client
+│   └── schema.sql                # Schéma de base de données
+└── scripts/
+    └── estimateAICosts.js        # Estimation des coûts IA
 ```
 
 ---
