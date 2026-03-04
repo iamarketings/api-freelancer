@@ -6,6 +6,7 @@ const { startCleanupCron } = require('./src/jobs/cleanupClosedBounties');
 const { startHackathonCron, runHackathonFetcherJob } = require('./src/jobs/hackathonFetcher');
 const { startJobsCron, runJobsFetcherJob } = require('./src/jobs/jobsFetcher');
 const { startRSSCron, runRSSFetcherJob } = require('./src/jobs/rssFetcher');
+const { startAIWorkerCron, runAIWorkerJob } = require('./src/jobs/aiWorker');
 const bountiesRouter = require('./src/routes/bounties');
 const hackathonRouter = require('./src/routes/hackathon');
 const jobsRouter = require('./src/routes/jobs');
@@ -192,6 +193,10 @@ app.listen(PORT, () => {
     console.log(`🚀 Serveur en ligne sur http://localhost:${PORT}`);
 
     startCleanupCron();
+
+    // AI Worker : CRON 10min + premier lancement à +30s
+    startAIWorkerCron();
+    setTimeout(() => runAIWorkerJob().catch(console.error), 30000);
 
     // GitHub Bounties : CRON 3h + premier lancement à +5s
     startCronJobs();

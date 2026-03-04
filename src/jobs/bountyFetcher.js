@@ -1,20 +1,9 @@
 const cron = require('node-cron');
 const axios = require('axios');
 const supabase = require('../db/supabase');
-const { qualifyLeadWithAI } = require('./aiQualifier');
-const { calculateLeadScore } = require('./leadScoringAlgo');
 
 let isRunning = false;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-function normalizeUrl(url) {
-    if (!url) return null;
-    try {
-        const u = new URL(url);
-        u.search = ''; u.hash = '';
-        return u.toString();
-    } catch { return url; }
-}
 
 async function fetchBountyIssues() {
     const newLeads = [];
@@ -45,8 +34,6 @@ async function fetchBountyIssues() {
     let cursor = null;
     let pageCount = 0;
     const MAX_PAGES = 10;
-
-    // Pour ne pas ajouter deux fois la même issue dans ce cycle
     const seenLocal = new Set();
 
     while (hasNextPage && pageCount < MAX_PAGES) {
@@ -77,7 +64,6 @@ async function fetchBountyIssues() {
                 if (repo.stargazerCount < 2 || daysSincePush > 365) continue;
 
                 const id = `github::${issue.id}`;
-
                 if (seenLocal.has(id)) continue;
                 seenLocal.add(id);
 
@@ -91,6 +77,7 @@ async function fetchBountyIssues() {
                     preview: (issue.bodyText || '').substring(0, 800),
                     type: 'bounty',
                     extra_data: { comments: issue.comments?.totalCount || 0, repository: repo.nameWithOwner, state: issue.state, labels },
+                    qualified: false
                 });
             }
 
@@ -115,78 +102,27 @@ async function runBountyFetcherJob() {
     }
 
     isRunning = true;
-    console.log('🔄 [CRON] Début de la récupération des Bounties GitHub (Supabase)...');
+    console.log('🔄 [CRON] Début de la récupération des Bounties GitHub...');
 
     try {
         const issues = await fetchBountyIssues();
         console.log(`[CRON] ${issues.length} issues actives trouvées.`);
 
-        // Récupérer les IDs déjà en base pour éviter un traitement IA inutile
-        const { data: existingData } = await supabase.from('opportunities').select('id, score').in('id', issues.map(i => i.id));
-        const existingIds = new Set(existingData?.map(r => r.id) || []);
+        if (issues.length === 0) return;
 
-        const newIssuesToProcess = issues.filter(issue => !existingIds.has(issue.id));
+        // On insère tout dans `queue` (onConflict ignoreDuplicates).
+        const { error } = await supabase.from('queue').upsert(issues, { onConflict: 'id', ignoreDuplicates: true });
 
-        console.log(`🤖 ${newIssuesToProcess.length} nouveaux projets GitHub à évaluer avec l'IA...`);
-
-        // Traitement séquentiel
-        for (let i = 0; i < newIssuesToProcess.length; i++) {
-            const lead = newIssuesToProcess[i];
-
-            try {
-                const qualified = await qualifyLeadWithAI(lead, null);
-
-                if (!qualified || qualified.ai_error) {
-                     console.log(`[Bounties] ⚠️  Erreur IA ou ignoré — ${lead.title}`);
-                     await sleep(500);
-                     continue;
-                }
-
-                qualified.score = calculateLeadScore(qualified);
-
-                const opportunityData = {
-                    id: qualified.id,
-                    title: qualified.title,
-                    source: qualified.source,
-                    url: qualified.url,
-                    image_url: null,
-                    state: lead.extra_data.state || 'OPEN',
-                    comment_count: lead.extra_data.comments || 0,
-                    created_at: qualified.created_at || new Date().toISOString(),
-                    last_activity_at: new Date().toISOString(),
-                    labels: lead.extra_data.labels || [],
-                    score: qualified.score,
-                    ai_summary: qualified.summary || '',
-                    is_scam: qualified.is_scam || false,
-                    discovered_at: new Date().toISOString(),
-                    contact: qualified.contact || null,
-                    budget: qualified.budget || null,
-                    skills: qualified.skills || [],
-                    summary_fr: qualified.summary_fr || '',
-                    enriched: qualified.enriched || null
-                };
-
-                const { error } = await supabase.from('opportunities').upsert(opportunityData, { onConflict: 'id' });
-
-                if (error) {
-                    console.error(`❌ [Supabase] Erreur upsert bounty ${lead.id}:`, error.message);
-                } else {
-                    console.log(`✨ Projet validé (${i + 1}/${newIssuesToProcess.length}): ${lead.title} (Score: ${qualified.score})`);
-                }
-
-                await sleep(500);
-
-            } catch (err) {
-                console.error(`Erreur IA sur l'issue ${lead.id}:`, err.message);
-            }
+        if (error) {
+            console.error(`❌ [Supabase] Erreur insertion queue (Bounties):`, error.message);
+        } else {
+            console.log(`✅ [CRON] ${issues.length} Bounties envoyés dans la file d'attente (Queue) Supabase.`);
         }
     } catch (error) {
         console.error('❌ [CRON] Erreur générale Bounties :', error.message);
     } finally {
         isRunning = false;
     }
-
-    console.log('✅ [CRON] Fin du cycle Bounties.');
 }
 
 function startCronJobs() {

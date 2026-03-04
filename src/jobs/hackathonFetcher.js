@@ -1,20 +1,9 @@
 const cron = require('node-cron');
 const axios = require('axios');
 const supabase = require('../db/supabase');
-const { qualifyLeadWithAI } = require('./aiQualifier');
-const { calculateLeadScore } = require('./leadScoringAlgo');
 
 let isRunning = false;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-function normalizeUrl(url) {
-    if (!url) return null;
-    try {
-        const u = new URL(url);
-        u.search = ''; u.hash = '';
-        return u.toString();
-    } catch { return url; }
-}
 
 async function fetchDevpostHackathons() {
     const newLeads = [];
@@ -59,7 +48,8 @@ async function fetchDevpostHackathons() {
                     extra_data: {
                         image_url: hack.thumbnail_url ? (hack.thumbnail_url.startsWith('//') ? 'https:' + hack.thumbnail_url : hack.thumbnail_url) : null,
                         registrations_count: hack.registrations_count
-                    }
+                    },
+                    qualified: false
                 });
             }
             console.log(`   [Hackathons] Devpost page ${page} trouvée`);
@@ -79,78 +69,26 @@ async function runHackathonFetcherJob() {
     }
 
     isRunning = true;
-    console.log('🔄 [CRON] Début de la récupération des Hackathons Devpost (Supabase)...');
+    console.log('🔄 [CRON] Début de la récupération des Hackathons Devpost...');
 
     try {
         const issues = await fetchDevpostHackathons();
         console.log(`[CRON] ${issues.length} hackathons actifs trouvés.`);
 
-        // Récupérer les IDs déjà en base pour éviter un traitement IA inutile
-        const { data: existingData } = await supabase.from('opportunities').select('id, score').in('id', issues.map(i => i.id));
-        const existingIds = new Set(existingData?.map(r => r.id) || []);
+        if (issues.length === 0) return;
 
-        const newIssuesToProcess = issues.filter(issue => !existingIds.has(issue.id));
+        const { error } = await supabase.from('queue').upsert(issues, { onConflict: 'id', ignoreDuplicates: true });
 
-        console.log(`🤖 ${newIssuesToProcess.length} nouveaux hackathons à évaluer avec l'IA...`);
-
-        // Traitement séquentiel
-        for (let i = 0; i < newIssuesToProcess.length; i++) {
-            const lead = newIssuesToProcess[i];
-
-            try {
-                const qualified = await qualifyLeadWithAI(lead, null);
-
-                if (!qualified || qualified.ai_error) {
-                     console.log(`[Hackathons] ⚠️  Erreur IA ou ignoré — ${lead.title}`);
-                     await sleep(500);
-                     continue;
-                }
-
-                qualified.score = calculateLeadScore(qualified);
-
-                const opportunityData = {
-                    id: qualified.id,
-                    title: qualified.title,
-                    source: qualified.source,
-                    url: qualified.url,
-                    image_url: lead.extra_data.image_url,
-                    state: 'OPEN',
-                    comment_count: lead.extra_data.registrations_count || 0,
-                    created_at: qualified.created_at || new Date().toISOString(),
-                    last_activity_at: new Date().toISOString(),
-                    labels: ['hackathon', 'devpost'],
-                    score: qualified.score,
-                    ai_summary: qualified.summary || '',
-                    is_scam: qualified.is_scam || false,
-                    discovered_at: new Date().toISOString(),
-                    contact: qualified.contact || null,
-                    budget: qualified.budget || null,
-                    skills: qualified.skills || [],
-                    summary_fr: qualified.summary_fr || '',
-                    enriched: qualified.enriched || null
-                };
-
-                const { error } = await supabase.from('opportunities').upsert(opportunityData, { onConflict: 'id' });
-
-                if (error) {
-                    console.error(`❌ [Supabase] Erreur upsert hackathon ${lead.id}:`, error.message);
-                } else {
-                    console.log(`✨ Hackathon validé (${i + 1}/${newIssuesToProcess.length}): ${lead.title} (Score: ${qualified.score})`);
-                }
-
-                await sleep(500);
-
-            } catch (err) {
-                console.error(`Erreur IA sur l'hackathon ${lead.id}:`, err.message);
-            }
+        if (error) {
+            console.error(`❌ [Supabase] Erreur insertion queue (Hackathons):`, error.message);
+        } else {
+            console.log(`✅ [CRON] ${issues.length} Hackathons envoyés dans la file d'attente (Queue) Supabase.`);
         }
     } catch (error) {
         console.error('❌ [CRON] Erreur générale Hackathons :', error.message);
     } finally {
         isRunning = false;
     }
-
-    console.log('✅ [CRON] Fin du cycle Hackathons.');
 }
 
 function startHackathonCron() {
