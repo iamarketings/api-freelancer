@@ -51,103 +51,111 @@ async function runAIWorkerJob() {
     isWorkerRunning = true;
 
     try {
-        // Fetch 50 unqualified leads from queue
-        const { data: queueItems, error: fetchError } = await supabase
-            .from('queue')
-            .select('*')
-            .eq('qualified', false)
-            .limit(50);
+        let hasMoreLeads = true;
+        let batchCount = 0;
 
-        if (fetchError) throw fetchError;
+        while (hasMoreLeads) {
+            batchCount++;
+            // Fetch 500 unqualified leads from queue
+            const { data: queueItems, error: fetchError } = await supabase
+                .from('queue')
+                .select('*')
+                .eq('qualified', false)
+                .limit(500);
 
-        if (!queueItems || queueItems.length === 0) {
-            isWorkerRunning = false;
-            return;
-        }
+            if (fetchError) throw fetchError;
 
-        console.log(`\n🤖 [AI Worker] Traitement de ${queueItems.length} leads depuis la Queue...`);
-
-        for (const lead of queueItems) {
-            try {
-                let scrapedContent = null;
-                // Si c'est un job deep et que ce n'est pas un reddit post, on scrape la page HTML
-                if (lead.url && (lead.type === 'job_deep' || (!lead.source.includes('r/') && lead.type === 'job'))) {
-                    console.log(`   🌐 HTML -> MD : ${lead.url.substring(0, 60)}...`);
-                    scrapedContent = await scrapeJobPage(lead.url);
-                }
-
-                const qualified = await qualifyLeadWithAI(lead, scrapedContent);
-
-                if (!qualified || qualified.ai_error) {
-                     console.log(`[AI Worker] ⚠️  Erreur IA ou rejet IA direct — ${lead.title}`);
-                     await markAsQualified(lead.id); // On le marque comme qualifié pour ne pas boucler dessus
-                     await sleep(500);
-                     continue;
-                }
-
-                qualified.contact = sanitizeContact(qualified.contact);
-                qualified.score = calculateLeadScore(qualified);
-
-                // Build opportunity data based on type
-                let commentCount = 0;
-                let state = 'OPEN';
-                let imageUrl = null;
-                let labels = [qualified.type];
-
-                if (lead.type === 'bounty' && lead.extra_data) {
-                    commentCount = lead.extra_data.comments || 0;
-                    state = lead.extra_data.state || 'OPEN';
-                    if (lead.extra_data.labels) labels.push(...lead.extra_data.labels);
-                } else if (lead.type === 'hackathon' && lead.extra_data) {
-                    imageUrl = lead.extra_data.image_url;
-                    commentCount = lead.extra_data.registrations_count || 0;
-                    labels.push('devpost');
-                } else if (lead.type === 'freelance') {
-                    commentCount = lead.extra_data?.upvotes || 0;
-                }
-
-                const opportunityData = {
-                    id: lead.id, // Very important: Use the lead ID, NOT qualified.id!
-                    title: lead.title,
-                    source: lead.source,
-                    url: lead.url,
-                    image_url: imageUrl,
-                    state: state,
-                    comment_count: commentCount,
-                    created_at: qualified.created_at || lead.created_at || new Date().toISOString(),
-                    last_activity_at: new Date().toISOString(),
-                    labels: labels,
-                    score: qualified.score,
-                    ai_summary: qualified.summary || '',
-                    is_scam: qualified.is_scam || false,
-                    discovered_at: new Date().toISOString(),
-                    contact: qualified.contact || null,
-                    budget: qualified.budget || null,
-                    skills: qualified.skills || [],
-                    summary_fr: qualified.summary_fr || '',
-                    enriched: qualified.enriched || null
-                };
-
-                const { error: upsertError } = await supabase.from('opportunities').upsert(opportunityData, { onConflict: 'id' });
-
-                if (upsertError) {
-                    console.error(`❌ [Supabase] Erreur upsert lead ${lead.id}:`, upsertError.message);
-                } else {
-                    console.log(`✨ Lead validé : ${lead.title} (Score: ${qualified.score})`);
-                }
-
-                // Toujours marquer comme qualifié à la fin, même si refusé par IA, pour sortir de la queue
-                await markAsQualified(lead.id);
-
-                // Pause API plus longue (3 sec) car DeepSeek limite
-                await sleep(3000);
-
-            } catch (err) {
-                console.error(`Erreur process queue item ${lead.id}:`, err.message);
-                // On pourrait incrémenter un compteur d'erreur ici, mais on ne bloque pas
+            if (!queueItems || queueItems.length === 0) {
+                console.log(`\n✅ [AI Worker] Plus aucun lead en attente. Queue complètement vidée !`);
+                hasMoreLeads = false;
+                break;
             }
+
+            console.log(`\n🤖 [AI Worker] (Boucle ${batchCount}) Traitement de ${queueItems.length} leads depuis la Queue...`);
+
+            const CONCURRENCY = 25;
+            for (let i = 0; i < queueItems.length; i += CONCURRENCY) {
+                const chunk = queueItems.slice(i, i + CONCURRENCY);
+                console.log(`\n⏳ Traitement du lot ${Math.floor(i / CONCURRENCY) + 1} (${chunk.length} leads en parallèle)...`);
+
+                await Promise.all(chunk.map(async (lead) => {
+                    try {
+                        let scrapedContent = null;
+                        if (lead.url && (lead.type === 'job_deep' || (!lead.source.includes('r/') && lead.type === 'job'))) {
+                            console.log(`   🌐 HTML -> MD : ${lead.url.substring(0, 60)}...`);
+                            scrapedContent = await scrapeJobPage(lead.url);
+                        }
+
+                        const qualified = await qualifyLeadWithAI(lead, scrapedContent);
+
+                        if (!qualified || qualified.ai_error) {
+                            console.log(`[AI Worker] ⚠️  Erreur IA ou rejet IA direct — ${lead.title}`);
+                            await markAsQualified(lead.id);
+                            return;
+                        }
+
+                        qualified.contact = sanitizeContact(qualified.contact);
+                        qualified.score = calculateLeadScore(qualified);
+
+                        let commentCount = 0;
+                        let state = 'OPEN';
+                        let imageUrl = null;
+                        let labels = [qualified.type];
+
+                        if (lead.type === 'bounty' && lead.extra_data) {
+                            commentCount = lead.extra_data.comments || 0;
+                            state = lead.extra_data.state || 'OPEN';
+                            if (lead.extra_data.labels) labels.push(...lead.extra_data.labels);
+                        } else if (lead.type === 'hackathon' && lead.extra_data) {
+                            imageUrl = lead.extra_data.image_url;
+                            commentCount = lead.extra_data.registrations_count || 0;
+                            labels.push('devpost');
+                        } else if (lead.type === 'freelance') {
+                            commentCount = lead.extra_data?.upvotes || 0;
+                        }
+
+                        const opportunityData = {
+                            id: lead.id,
+                            title: lead.title,
+                            source: lead.source,
+                            url: lead.url,
+                            image_url: imageUrl,
+                            state: state,
+                            comment_count: commentCount,
+                            created_at: qualified.created_at || lead.created_at || new Date().toISOString(),
+                            last_activity_at: new Date().toISOString(),
+                            labels: labels,
+                            score: qualified.score,
+                            ai_summary: qualified.enriched?.summary || qualified.summary || '',
+                            is_scam: qualified.is_scam || false,
+                            discovered_at: new Date().toISOString(),
+                            contact: qualified.contact || null,
+                            budget: qualified.enriched?.salary?.notes || qualified.budget || null,
+                            skills: qualified.enriched?.requiredProfile || qualified.skills || [],
+                            summary_fr: qualified.enriched?.summary || qualified.summary_fr || '',
+                            enriched: qualified.enriched || null
+                        };
+
+                        const { error: upsertError } = await supabase.from('opportunities').upsert(opportunityData, { onConflict: 'id' });
+
+                        if (upsertError) {
+                            console.error(`❌ [Supabase] Erreur upsert lead ${lead.id}:`, upsertError.message);
+                        } else {
+                            console.log(`✨ Lead validé : ${lead.title} (Score: ${qualified.score})`);
+                        }
+
+                        await markAsQualified(lead.id);
+
+                    } catch (err) {
+                        console.error(`Erreur process queue item ${lead.id}:`, err.message);
+                    }
+                }));
+
+                // Légère pause après avoir bombardé 25 requêtes d'un coup
+                await sleep(4000);
+            }
+            console.log(`✅ [AI Worker] Sous-lot ${batchCount} terminé. Recherche de la suite...`);
         }
-        console.log(`✅ [AI Worker] Batch terminé.`);
     } catch (error) {
         console.error('❌ [AI Worker] Erreur générale :', error.message);
     } finally {
@@ -156,8 +164,8 @@ async function runAIWorkerJob() {
 }
 
 function startAIWorkerCron() {
-    console.log('⏰ CRON AI Worker planifié toutes les 10 minutes (*/10 * * * *).');
-    cron.schedule('*/10 * * * *', runAIWorkerJob);
+    console.log('⏰ CRON AI Worker planifié toutes les 20 minutes (*/20 * * * *).');
+    cron.schedule('*/20 * * * *', runAIWorkerJob);
 }
 
 module.exports = { startAIWorkerCron, runAIWorkerJob };

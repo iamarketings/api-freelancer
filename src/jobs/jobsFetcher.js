@@ -89,12 +89,22 @@ async function runJobsFetcherJob() {
 
         if (issues.length === 0) return;
 
-        const { error } = await supabase.from('queue').upsert(issues, { onConflict: 'id', ignoreDuplicates: true });
+        // 1. Récupérer les IDs déjà en base
+        const { data: existingData } = await supabase.from('opportunities').select('id').in('id', issues.map(i => i.id));
+        const existingIds = new Set(existingData?.map(r => r.id) || []);
 
-        if (error) {
-            console.error(`❌ [Supabase] Erreur insertion queue (Jobs):`, error.message);
+        const newIssues = issues.filter(issue => !existingIds.has(issue.id));
+
+        // Note: Pour les jobs, il n'y a pas forcément de `comment_count` ou autre à mettre à jour
+        // On se contente d'ajouter les nouveaux.
+
+        // 2. Envoyer uniquement les nouveaux à la Queue IA
+        if (newIssues.length > 0) {
+            console.log(`🚀 Ajout de ${newIssues.length} nouveaux Jobs dans la Queue...`);
+            const { error } = await supabase.from('queue').upsert(newIssues, { onConflict: 'id', ignoreDuplicates: true });
+            if (error) console.error(`❌ [Supabase] Erreur insertion queue (Jobs):`, error.message);
         } else {
-            console.log(`✅ [CRON] ${issues.length} Jobs envoyés dans la file d'attente (Queue) Supabase.`);
+            console.log(`✅ [CRON] Aucun nouveau Job à envoyer à l'IA.`);
         }
 
     } catch (error) {

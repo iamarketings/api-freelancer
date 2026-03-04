@@ -31,12 +31,12 @@ async function fetchDevpostHackathons() {
                 const url = hack.url || `https://devpost.com/hackathons/${hack.id}`;
 
                 const stripHtml = s => (s || '').replace(/<[^>]*>/g, '').trim();
-                const prizeStr  = stripHtml(hack.prize_amount || '');
-                const location  = hack.displayed_location?.location || 'En ligne';
-                const dates     = hack.submission_period_dates || '';
-                let preview     = `Hackathon ${location}.`;
+                const prizeStr = stripHtml(hack.prize_amount || '');
+                const location = hack.displayed_location?.location || 'En ligne';
+                const dates = hack.submission_period_dates || '';
+                let preview = `Hackathon ${location}.`;
                 if (prizeStr) preview += ` Prix : ${prizeStr}.`;
-                if (dates)    preview += ` Dates : ${dates}.`;
+                if (dates) preview += ` Dates : ${dates}.`;
 
                 newLeads.push({
                     id, source: 'Devpost',
@@ -77,12 +77,33 @@ async function runHackathonFetcherJob() {
 
         if (issues.length === 0) return;
 
-        const { error } = await supabase.from('queue').upsert(issues, { onConflict: 'id', ignoreDuplicates: true });
+        // 1. Récupérer les IDs déjà en base
+        const { data: existingData } = await supabase.from('opportunities').select('id').in('id', issues.map(i => i.id));
+        const existingIds = new Set(existingData?.map(r => r.id) || []);
 
-        if (error) {
-            console.error(`❌ [Supabase] Erreur insertion queue (Hackathons):`, error.message);
+        const newIssues = issues.filter(issue => !existingIds.has(issue.id));
+        const existingIssues = issues.filter(issue => existingIds.has(issue.id));
+
+        // 2. Mettre à jour l'état et les commentaires des existants (sans IA)
+        if (existingIssues.length > 0) {
+            console.log(`🔄 Mise à jour rapide de ${existingIssues.length} hackathons existants...`);
+            for (const issue of existingIssues) {
+                await supabase.from('opportunities')
+                    .update({
+                        comment_count: issue.extra_data?.registrations_count || 0,
+                        last_activity_at: new Date().toISOString()
+                    })
+                    .eq('id', issue.id);
+            }
+        }
+
+        // 3. Envoyer uniquement les nouveaux à la Queue IA
+        if (newIssues.length > 0) {
+            console.log(`🚀 Ajout de ${newIssues.length} nouveaux Hackathons dans la Queue...`);
+            const { error } = await supabase.from('queue').upsert(newIssues, { onConflict: 'id', ignoreDuplicates: true });
+            if (error) console.error(`❌ [Supabase] Erreur insertion queue (Hackathons):`, error.message);
         } else {
-            console.log(`✅ [CRON] ${issues.length} Hackathons envoyés dans la file d'attente (Queue) Supabase.`);
+            console.log(`✅ [CRON] Aucun nouveau Hackathon à envoyer à l'IA.`);
         }
     } catch (error) {
         console.error('❌ [CRON] Erreur générale Hackathons :', error.message);

@@ -15,12 +15,10 @@ const RSS_FEEDS = [
     { url: 'https://remoteok.com/remote-jobs.rss', source: 'RemoteOK', type: 'job' },
     { url: 'https://weworkremotely.com/categories/remote-front-end-programming-jobs.rss', source: 'WeWorkRemotely', type: 'job' },
     { url: 'https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss', source: 'WeWorkRemotely', type: 'job' },
-    { url: 'https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss', source: 'WeWorkRemotely', type: 'job' },
-    { url: 'https://upwork.com/ab/feed/jobs/rss?q=react+OR+node+OR+javascript+OR+typescript+OR+frontend+OR+backend&sort=recency', source: 'Upwork', type: 'freelance' },
-    { url: 'https://upwork.com/ab/feed/jobs/rss?q=smart+contract+OR+solidity+OR+web3+OR+blockchain&sort=recency', source: 'Upwork', type: 'freelance' }
+    { url: 'https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss', source: 'WeWorkRemotely', type: 'job' }
 ];
 
-const REDDIT_SUBS = ['forhire', 'freelance_forhire', 'remotejs', 'reactjs', 'JobOpenings'];
+const REDDIT_SUBS = []; // Désactivé à la demande de l'utilisateur
 
 const HTTP_HEADERS = {
     'Accept': 'application/json, application/rss+xml',
@@ -127,12 +125,35 @@ async function runRSSFetcherJob() {
 
         if (issues.length === 0) return;
 
-        const { error } = await supabase.from('queue').upsert(issues, { onConflict: 'id', ignoreDuplicates: true });
+        // 1. Récupérer les IDs déjà en base
+        const { data: existingData } = await supabase.from('opportunities').select('id').in('id', issues.map(i => i.id));
+        const existingIds = new Set(existingData?.map(r => r.id) || []);
 
-        if (error) {
-            console.error(`❌ [Supabase] Erreur insertion queue (RSS):`, error.message);
+        const newIssues = issues.filter(issue => !existingIds.has(issue.id));
+        const existingIssues = issues.filter(issue => existingIds.has(issue.id));
+
+        // 2. Mettre à jour l'état et les commentaires des existants (sans IA)
+        if (existingIssues.length > 0) {
+            console.log(`🔄 Mise à jour rapide de ${existingIssues.length} flux RSS/Reddit existants...`);
+            for (const issue of existingIssues) {
+                if (issue.type === 'freelance' && issue.extra_data?.upvotes !== undefined) {
+                    await supabase.from('opportunities')
+                        .update({
+                            comment_count: issue.extra_data.upvotes,
+                            last_activity_at: new Date().toISOString()
+                        })
+                        .eq('id', issue.id);
+                }
+            }
+        }
+
+        // 3. Envoyer uniquement les nouveaux à la Queue IA
+        if (newIssues.length > 0) {
+            console.log(`🚀 Ajout de ${newIssues.length} nouveaux leads RSS dans la Queue...`);
+            const { error } = await supabase.from('queue').upsert(newIssues, { onConflict: 'id', ignoreDuplicates: true });
+            if (error) console.error(`❌ [Supabase] Erreur insertion queue (RSS):`, error.message);
         } else {
-            console.log(`✅ [CRON] ${issues.length} leads RSS envoyés dans la file d'attente (Queue) Supabase.`);
+            console.log(`✅ [CRON] Aucun nouveau lead RSS à envoyer à l'IA.`);
         }
 
     } catch (error) {

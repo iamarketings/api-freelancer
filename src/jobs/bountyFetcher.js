@@ -82,7 +82,7 @@ async function fetchBountyIssues() {
             }
 
             hasNextPage = searchData?.pageInfo?.hasNextPage || false;
-            cursor      = searchData?.pageInfo?.endCursor || null;
+            cursor = searchData?.pageInfo?.endCursor || null;
             console.log(`   [Bounties] GitHub page ${pageCount}/${MAX_PAGES} (Trouvés: ${newLeads.length})`);
             await sleep(500);
 
@@ -110,13 +110,34 @@ async function runBountyFetcherJob() {
 
         if (issues.length === 0) return;
 
-        // On insère tout dans `queue` (onConflict ignoreDuplicates).
-        const { error } = await supabase.from('queue').upsert(issues, { onConflict: 'id', ignoreDuplicates: true });
+        // 1. Récupérer les IDs déjà en base pour éviter un traitement IA inutile
+        const { data: existingData } = await supabase.from('opportunities').select('id').in('id', issues.map(i => i.id));
+        const existingIds = new Set(existingData?.map(r => r.id) || []);
 
-        if (error) {
-            console.error(`❌ [Supabase] Erreur insertion queue (Bounties):`, error.message);
+        const newIssues = issues.filter(issue => !existingIds.has(issue.id));
+        const existingIssues = issues.filter(issue => existingIds.has(issue.id));
+
+        // 2. Mettre à jour l'état et les commentaires des Bounties existants (Skipper la file d'attente)
+        if (existingIssues.length > 0) {
+            console.log(`🔄 Mise à jour rapide de ${existingIssues.length} bounties existants (sans IA)...`);
+            for (const issue of existingIssues) {
+                await supabase.from('opportunities')
+                    .update({
+                        comment_count: issue.extra_data?.comments || 0,
+                        state: issue.extra_data?.state || 'OPEN',
+                        last_activity_at: new Date().toISOString()
+                    })
+                    .eq('id', issue.id);
+            }
+        }
+
+        // 3. Envoyer uniquement les nouveaux à la Queue IA
+        if (newIssues.length > 0) {
+            console.log(`🚀 Ajout de ${newIssues.length} nouveaux Bounties dans la Queue...`);
+            const { error } = await supabase.from('queue').upsert(newIssues, { onConflict: 'id', ignoreDuplicates: true });
+            if (error) console.error(`❌ [Supabase] Erreur insertion queue (Bounties):`, error.message);
         } else {
-            console.log(`✅ [CRON] ${issues.length} Bounties envoyés dans la file d'attente (Queue) Supabase.`);
+            console.log(`✅ [CRON] Aucun nouveau Bounty à envoyer à l'IA.`);
         }
     } catch (error) {
         console.error('❌ [CRON] Erreur générale Bounties :', error.message);

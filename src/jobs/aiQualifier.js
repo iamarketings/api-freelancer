@@ -18,18 +18,9 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 let jsonrepair;
 try { jsonrepair = require('jsonrepair').jsonrepair; } catch { }
 
-// === CONFIGURATION IA ===
-const PRIMARY_MODEL = process.env.AI_MODEL || 'google/gemma-3-27b-it:free';
-const FALLBACK_MODELS = [
-    'google/gemma-3-27b-it:free',
-    'meta-llama/llama-3.3-70b-instruct:free',
-    'qwen/qwen-2.5-72b-instruct:free',
-    'mistralai/mistral-7b-instruct:free',
-    'microsoft/phi-3-medium-128k-instruct:free',
-    'openrouter/free',
-];
+// === CONFIGURATION IA & FALLBACK ===
 
-const openai = new OpenAI({
+const openRouterClient = new OpenAI({
     apiKey: process.env.OPENROUTER_API_KEY,
     baseURL: 'https://openrouter.ai/api/v1',
     defaultHeaders: {
@@ -37,6 +28,13 @@ const openai = new OpenAI({
         'X-Title': 'LeadQualifier',
     },
 });
+
+const deepseekClient = new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseURL: 'https://api.deepseek.com'
+});
+
+const OPENROUTER_PRIMARY = process.env.AI_MODEL || 'deepseek/deepseek-chat';
 
 const HTTP_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -183,118 +181,96 @@ async function qualifyLeadWithAI(lead, scrapedContent = null) {
         : `Contenu de l'annonce :\n"""\n${previewContent}\n"""`;
 
     try {
-        const prompt = `Tu es un expert en recrutement technique ultra-sélectif sur le marché FRANCOPHONE.
-Ton rôle est DOUBLE : (1) filtrer les offres non sérieuses, (2) générer une FICHE QUALIFIÉE ultra-détaillée pour les bonnes offres.
+        const prompt = `Tu es un expert en recrutement IT francophone.
+Rendez-moi un JSON strict qualifiant l'opportunité suivante. 
+SI l'offre est un scam, trop vague OU qu'il n'y a STRICTEMENT AUCUN moyen de contacter l'entreprise en direct (hors plateforme), retourne "contact": {} pour forcer le rejet.
+Pour GitHub Bounties, le lien du repo/issue est un contact valide.
 
-=== SOURCE DE L'ANNONCE ===
-Plateforme source : ${sanitizeForPrompt(lead.source)}
-Type : ${sanitizeForPrompt(lead.type)}
-Titre : ${sanitizeForPrompt(lead.title)}
-URL originale : ${sanitizeForPrompt(lead.url)}
-Publié le : ${sanitizeForPrompt(lead.created_at)}
+TITRE: ${sanitizeForPrompt(lead.title)}
+SOURCE: ${sanitizeForPrompt(lead.source)}
+URL: ${sanitizeForPrompt(lead.url)}
+EMAILS DETECTES: ${emailsInfo}
+DESCRIPTION: ${contextBlock}
 
-${emailsInfo}
-
-${contextBlock}
-
-=== RÈGLES ABSOLUES ===
-
-RÈGLE 1 — CONTACT DIRECT CLIENT FINAL (CRITIQUE) :
-L'objectif est de mettre en relation directe avec le CLIENT FINAL, pas de renvoyer vers la plateforme source.
-- Ne jamais utiliser les URLs des plateformes comme contact (remoteok.com, weworkremotely.com, remotive.com, jobicy.com, reddit.com, linkedin.com, indeed.com, etc.)
-- "external_link" doit être un formulaire de candidature DIRECT sur le site de l'entreprise, ou null
-- "website" doit être le site officiel de l'entreprise, pas sa page sur une plateforme
-- "email" doit être l'email DIRECT de recrutement de l'entreprise (RH, hiring manager), pas un email générique de plateforme
-- POUR LES BOUNTIES GitHub : le contact valide est l'URL de l'issue GitHub elle-même. Mets "external_link": "${sanitizeForPrompt(lead.url)}", "website": domaine du repo, "email": null. Ne rejette JAMAIS un bounty pour absence d'email.
-- POUR LES AUTRES SOURCES : si AUCUN contact direct n'est identifiable (email OU formulaire direct OU site officiel avec page carrière), retourne "contact": {} pour déclencher le rejet.
-
-RÈGLE 2 — REJET STRICT :
-Rejette (contact: {}) si :
-- Aucun moyen de contacter directement l'entreprise sans passer par la plateforme source
-- L'offre ressemble à un scam (is_scam: true)
-- L'offre est trop vague pour être qualifiable
-
-RÈGLE 3 — CORRECTION D'URL :
-Corrige toute URL malformée (hxxps://, manque de protocole, etc.) en URL valide https://.
-
-=== FORMAT DE RÉPONSE JSON STRICT ===
+FORMAT ATTENDU EXACT:
 {
-  "title": "Titre propre (sans préfixes [HIRING], [FOR HIRE], etc.)",
+  "title": "Titre propre",
   "source": "${sanitizeForPrompt(lead.source)}",
   "url": "${sanitizeForPrompt(lead.url)}",
   "created_at": "${sanitizeForPrompt(lead.created_at)}",
   "is_scam": false,
   "urgency": false,
   "contact": {
-    "email": "email@entreprise.com ou null — JAMAIS un email de plateforme",
+    "email": "email direct entreprise ou null",
     "telegram": null,
     "discord": null,
-    "external_link": "URL formulaire DIRECT entreprise ou URL issue GitHub ou null",
-    "website": "https://site-officiel-entreprise.com   ou null"
+    "external_link": "lien formulaire direct/github ou null",
+    "website": "site officiel ou null"
   },
-  "labels": ["Tag1", "Tag2"],
+  "labels": ["tag1", "tag2"],
   "enriched": {
-    "company": "Nom de l'entreprise",
-    "salary": {
-      "min": null,
-      "max": null,
-      "currency": "USD | EUR | GBP | RTC | SOL | BTC | ETH | null",
-      "unit": "hour | year | month | project | null",
-      "notes": "ex: 140 000 - 157 000 USD/an, ou 'Non spécifié'"
-    },
-    "location": {
-      "remote": true,
-      "regions": ["USA", "Europe", "Monde"]
-    },
-    "originalLanguage": "Anglais | Français | Espagnol | Allemand | etc.",
-    "contractType": "CDI | Freelance | CDD | Temps partiel | Mission",
-    "experienceRequired": {
-      "minYears": null,
-      "level": "junior | intermédiaire | senior | lead"
-    },
-    "summary": "Résumé accrocheur en 2-3 phrases en FRANÇAIS",
-    "responsibilities": ["Responsabilité clé 1 en FRANÇAIS"],
-    "requiredProfile": ["Compétence ou expérience requise 1 en FRANÇAIS"],
-    "disqualifiers": ["Critère éliminatoire 1 en FRANÇAIS"],
-    "keyBenefits": ["Avantage notable 1 en FRANÇAIS"],
-    "applicationProcess": "Description du processus de candidature en FRANÇAIS"
+    "company": "Entreprise",
+    "salary": { "min": null, "max": null, "currency": "USD", "unit": "year", "notes": "" },
+    "location": { "remote": true, "regions": [] },
+    "contractType": "CDI",
+    "experienceRequired": { "minYears": null, "level": "senior" },
+    "summary": "Résumé ultra complet et engageant en FRANÇAIS. Minimum 3 à 4 paragraphes détaillant: le contexte complet du projet, le rôle exact attendu, les défis techniques à relever et l'impact de la mission. Utilise un ton professionnel et accrocheur pour retenir le visiteur sur le site web.",
+    "responsibilities": ["Resp 1"],
+    "requiredProfile": ["Comp 1"],
+    "disqualifiers": [],
+    "keyBenefits": [],
+    "applicationProcess": ""
   }
 }
 
-Instructions finales :
-- "contact": {} (objet vide) si aucun contact direct trouvable → rejet automatique
-- "labels" = 5 à 8 tags techniques PERTINENTS (anglais si usage technique standard)
-- "urgency": true UNIQUEMENT si l'annonce contient "urgent", "ASAP", "immediate start"
-- "currency": accepte chaque crypto mentionnée (RTC, SOL, USDC, BTC, etc.)
-- Champ inconnu → null (jamais chaîne vide)
-- Tout l'objet "enriched" en FRANÇAIS professionnel`;
+Règles: 
+1. Si "contact" n'a aucune vraie piste directe (hors URLs de plateformes distantes), mets "contact": {}.
+2. "labels": 3 à 5 mots-clés IT max.
+3. Toujours répondre en français pour "enriched".
+4. Le champ "summary" DOIT être très détaillé, descriptif, et donner envie de postuler. Ne fais pas de résumé de 2 lignes, développe le contexte au maximum.`;
 
         const messages = [
-            { role: 'system', content: 'Réponds uniquement en JSON valide et bien formé, sans texte explicatif ni balises markdown. Langue de l\'objet enriched : Français.' },
+            { role: 'system', content: 'Réponds uniquement en JSON valide et bien formé.' },
             { role: 'user', content: prompt }
         ];
 
-        const estimatedTokens = Math.min(4000, 2000 + Math.floor((contentForPrompt?.length || 0) / 4));
+        let response = null;
+        let usedProvider = '';
 
-        const response = await withRetry(() =>
-            openai.chat.completions.create({
-                model: PRIMARY_MODEL,
-                messages,
-                max_tokens: estimatedTokens,
-                response_format: { type: 'json_object' },
-                extra_body: {
-                    models: FALLBACK_MODELS,
-                    plugins: [{ id: 'response-healing' }],
-                    require_parameters: true,
-                },
-                timeout: 45000,
-            })
-        );
+        try {
+            console.log(`   🤖 [AI] Tentative via OpenRouter...`);
+            // 1. Essai OPENROUTER (Cheap fallbacks)
+            response = await withRetry(() =>
+                openRouterClient.chat.completions.create({
+                    model: OPENROUTER_PRIMARY,
+                    messages,
+                    max_tokens: 1500,
+                    response_format: { type: 'json_object' },
+                    extra_body: {
+                        require_parameters: true,
+                    },
+                    timeout: 45000,
+                })
+                , 2, 1000);
+            usedProvider = 'OpenRouter';
 
-        const usedModel = response.model || PRIMARY_MODEL;
-        if (usedModel !== PRIMARY_MODEL) {
-            console.log(`   ↩️  [AI Fallback] Modèle utilisé : ${usedModel} (primaire: ${PRIMARY_MODEL})`);
+        } catch (errorOR) {
+            console.warn(`   ⚠️ [AI] OpenRouter a échoué (${errorOR.message}). Bascule sur DeepSeek...`);
+
+            // 2. Essai DEEPSEEK DIRECT (Dernier recours)
+            response = await withRetry(() =>
+                deepseekClient.chat.completions.create({
+                    model: 'deepseek-chat',
+                    messages,
+                    max_tokens: 1500,
+                    response_format: { type: 'json_object' },
+                    timeout: 30000,
+                })
+                , 2, 1000);
+            usedProvider = 'DeepSeek';
         }
+
+        console.log(`   ✅ [AI] Qualifié avec succès via ${usedProvider}.`);
 
         const finishReason = response.choices[0].finish_reason;
         if (finishReason === 'length') {

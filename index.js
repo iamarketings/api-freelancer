@@ -194,7 +194,7 @@ app.listen(PORT, () => {
 
     startCleanupCron();
 
-    // AI Worker : CRON 10min + premier lancement à +30s
+    // AI Worker : CRON 20min + premier lancement à +30s
     startAIWorkerCron();
     setTimeout(() => runAIWorkerJob().catch(console.error), 30000);
 

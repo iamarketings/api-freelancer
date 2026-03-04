@@ -52,7 +52,7 @@ STRUCTURE TA RÉPONSE AINSI (avec des emojis):
             body: JSON.stringify({
                 model: 'deepseek-chat',
                 messages: [{ role: 'user', content: prompt }],
-                max_tokens: 800,
+                max_tokens: 1000,
                 temperature: 0.7,
             }),
         });
