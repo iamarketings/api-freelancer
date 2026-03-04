@@ -17,4 +17,5 @@ pnpm-debug.log*
 Thumbs.db
 
 # Dossier de test et recherche (isolé)
-lab/
+lab
+lab.bak.zip
