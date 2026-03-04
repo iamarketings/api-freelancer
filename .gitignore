@@ -3,7 +3,7 @@ node_modules/
 
 # Variables d'environnement (SECRETS - NE JAMAIS COMMITER)
 .env
-test/
+
 # Base de données locale (générée automatiquement au lancement)
 dev.json
 
