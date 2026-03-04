@@ -15,3 +15,6 @@ pnpm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Dossier de test et recherche (isolé)
+lab/
