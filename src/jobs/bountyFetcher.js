@@ -1,15 +1,116 @@
 const cron = require('node-cron');
+const axios = require('axios');
 const supabase = require('../db/supabase');
-const { fetchBountyIssues } = require('../services/githubService');
-const { analyzeBountyWithAI } = require('../services/aiSummarizer');
-const { calculateBountyScore } = require('../utils/scoringAlgo');
+const { qualifyLeadWithAI } = require('./aiQualifier');
+const { calculateLeadScore } = require('./leadScoringAlgo');
 
-// Verrou pour éviter que deux cycles CRON s'exécutent en même temps (Race Condition)
 let isRunning = false;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function normalizeUrl(url) {
+    if (!url) return null;
+    try {
+        const u = new URL(url);
+        u.search = ''; u.hash = '';
+        return u.toString();
+    } catch { return url; }
+}
+
+async function fetchBountyIssues() {
+    const newLeads = [];
+    console.log('\n💻 [Bounties] GitHub Bounties (GraphQL)...');
+
+    if (!process.env.GITHUB_TOKEN) {
+        console.warn('   ⚠️  GITHUB_TOKEN non défini. Scraping GitHub ignoré.');
+        return newLeads;
+    }
+
+    const query = `
+      query($cursor: String) {
+        search(query: "label:bounty,reward,paid state:open type:issue", type: ISSUE, first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            ... on Issue {
+              id title url state createdAt bodyText
+              labels(first: 5) { nodes { name } }
+              comments { totalCount }
+              repository { nameWithOwner stargazerCount pushedAt }
+            }
+          }
+        }
+      }
+    `;
+
+    let hasNextPage = true;
+    let cursor = null;
+    let pageCount = 0;
+    const MAX_PAGES = 10;
+
+    // Pour ne pas ajouter deux fois la même issue dans ce cycle
+    const seenLocal = new Set();
+
+    while (hasNextPage && pageCount < MAX_PAGES) {
+        try {
+            const resp = await axios.post(
+                'https://api.github.com/graphql',
+                { query, variables: { cursor } },
+                {
+                    headers: {
+                        'Authorization': `bearer ${process.env.GITHUB_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                    timeout: 15000,
+                }
+            );
+
+            if (resp.data.errors) throw new Error(JSON.stringify(resp.data.errors));
+
+            const searchData = resp.data.data?.search;
+            const nodes = searchData?.nodes || [];
+            pageCount++;
+
+            for (const issue of nodes) {
+                if (!issue?.repository) continue;
+
+                const repo = issue.repository;
+                const daysSincePush = (Date.now() - new Date(repo.pushedAt)) / (1000 * 60 * 60 * 24);
+                if (repo.stargazerCount < 2 || daysSincePush > 365) continue;
+
+                const id = `github::${issue.id}`;
+
+                if (seenLocal.has(id)) continue;
+                seenLocal.add(id);
+
+                const labels = issue.labels?.nodes?.map(l => l.name) || [];
+
+                newLeads.push({
+                    id, source: 'GitHub',
+                    title: `[Bounty] ${issue.title}`,
+                    url: issue.url,
+                    created_at: issue.createdAt,
+                    preview: (issue.bodyText || '').substring(0, 800),
+                    type: 'bounty',
+                    extra_data: { comments: issue.comments?.totalCount || 0, repository: repo.nameWithOwner, state: issue.state, labels },
+                });
+            }
+
+            hasNextPage = searchData?.pageInfo?.hasNextPage || false;
+            cursor      = searchData?.pageInfo?.endCursor || null;
+            console.log(`   [Bounties] GitHub page ${pageCount}/${MAX_PAGES} (Trouvés: ${newLeads.length})`);
+            await sleep(500);
+
+        } catch (err) {
+            console.error(`   ❌ GitHub GraphQL page ${pageCount + 1}: ${err.message}`);
+            break;
+        }
+    }
+
+    return newLeads;
+}
 
 async function runBountyFetcherJob() {
     if (isRunning) {
-        console.log('⚠️ [CRON] Job déjà en cours, ce cycle est ignoré.');
+        console.log('⚠️ [CRON] Job Bounties déjà en cours, cycle ignoré.');
         return;
     }
 
@@ -18,103 +119,78 @@ async function runBountyFetcherJob() {
 
     try {
         const issues = await fetchBountyIssues();
-        console.log(`[CRON] ${issues.length} issues trouvées.`);
+        console.log(`[CRON] ${issues.length} issues actives trouvées.`);
 
-        const newIssuesToProcess = [];
+        // Récupérer les IDs déjà en base pour éviter un traitement IA inutile
+        const { data: existingData } = await supabase.from('opportunities').select('id, score').in('id', issues.map(i => i.id));
+        const existingIds = new Set(existingData?.map(r => r.id) || []);
 
-        for (const issue of issues) {
-            if (!issue) continue;
+        const newIssuesToProcess = issues.filter(issue => !existingIds.has(issue.id));
 
-            const repo = issue.repository;
-            const now = new Date();
-            const lastPushDate = new Date(repo.pushedAt);
-            const daysSincePushed = (now - lastPushDate) / (1000 * 60 * 60 * 24);
+        console.log(`🤖 ${newIssuesToProcess.length} nouveaux projets GitHub à évaluer avec l'IA...`);
 
-            if (repo.stargazerCount < 2 || daysSincePushed > 365) {
-                // Ignore silentement pour ne pas spammer les logs
-                continue;
-            }
-
-            const { data: existingBounty } = await supabase
-                .from('opportunities')
-                .select('id')
-                .eq('id', issue.id)
-                .single();
-
-            const currentScore = calculateBountyScore(issue);
-
-            if (existingBounty) {
-                await supabase
-                    .from('opportunities')
-                    .update({
-                        state: issue.state,
-                        comment_count: issue.comments.totalCount,
-                        last_activity_at: new Date(issue.updatedAt).toISOString(),
-                        score: currentScore,
-                    })
-                    .eq('id', issue.id);
-            } else {
-                newIssuesToProcess.push({ issue, currentScore });
-            }
-        }
-
-        console.log(`🤖 ${newIssuesToProcess.length} nouveaux projets à évaluer avec l'IA...`);
-
-        // Traitement séquentiel (1 par 1) pour ne pas exploser les limites de l'IA
+        // Traitement séquentiel
         for (let i = 0; i < newIssuesToProcess.length; i++) {
-            const { issue, currentScore } = newIssuesToProcess[i];
+            const lead = newIssuesToProcess[i];
 
             try {
-                const aiAnalysis = await analyzeBountyWithAI(issue);
+                const qualified = await qualifyLeadWithAI(lead, null);
 
-                const finalScore = aiAnalysis.isScam ? 0 : currentScore;
-                const labels = issue.labels.nodes.map(l => l.name);
-
-                const newBounty = {
-                    id: issue.id,
-                    title: issue.title,
-                    source: issue.repository.nameWithOwner,
-                    url: issue.url,
-                    state: issue.state,
-                    comment_count: issue.comments.totalCount,
-                    created_at: new Date(issue.createdAt).toISOString(),
-                    last_activity_at: new Date(issue.updatedAt).toISOString(),
-                    labels: labels,
-                    score: finalScore,
-                    ai_summary: aiAnalysis.summary,
-                    is_scam: aiAnalysis.isScam,
-                    discovered_at: new Date().toISOString()
-                };
-
-                const { error } = await supabase
-                    .from('opportunities')
-                    .upsert(newBounty, { onConflict: 'id' });
-
-                if (error) {
-                    console.error(`❌ [Supabase] Erreur upsert bounty ${issue.id}:`, error.message);
-                } else {
-                    console.log(`✨ Projet validé (${i + 1}/${newIssuesToProcess.length}): ${issue.title} (Scam: ${aiAnalysis.isScam})`);
+                if (!qualified || qualified.ai_error) {
+                     console.log(`[Bounties] ⚠️  Erreur IA ou ignoré — ${lead.title}`);
+                     await sleep(500);
+                     continue;
                 }
 
-                // Optionnel : petite pause entre chaque appel pour être encore plus sûr
-                await new Promise(resolve => setTimeout(resolve, 500));
+                qualified.score = calculateLeadScore(qualified);
+
+                const opportunityData = {
+                    id: qualified.id,
+                    title: qualified.title,
+                    source: qualified.source,
+                    url: qualified.url,
+                    image_url: null,
+                    state: lead.extra_data.state || 'OPEN',
+                    comment_count: lead.extra_data.comments || 0,
+                    created_at: qualified.created_at || new Date().toISOString(),
+                    last_activity_at: new Date().toISOString(),
+                    labels: lead.extra_data.labels || [],
+                    score: qualified.score,
+                    ai_summary: qualified.summary || '',
+                    is_scam: qualified.is_scam || false,
+                    discovered_at: new Date().toISOString(),
+                    contact: qualified.contact || null,
+                    budget: qualified.budget || null,
+                    skills: qualified.skills || [],
+                    summary_fr: qualified.summary_fr || '',
+                    enriched: qualified.enriched || null
+                };
+
+                const { error } = await supabase.from('opportunities').upsert(opportunityData, { onConflict: 'id' });
+
+                if (error) {
+                    console.error(`❌ [Supabase] Erreur upsert bounty ${lead.id}:`, error.message);
+                } else {
+                    console.log(`✨ Projet validé (${i + 1}/${newIssuesToProcess.length}): ${lead.title} (Score: ${qualified.score})`);
+                }
+
+                await sleep(500);
 
             } catch (err) {
-                console.error(`Erreur IA sur l'issue ${issue.id}:`, err.message);
+                console.error(`Erreur IA sur l'issue ${lead.id}:`, err.message);
             }
         }
     } catch (error) {
-        console.error('❌ [CRON] Erreur générale :', error.message);
+        console.error('❌ [CRON] Erreur générale Bounties :', error.message);
     } finally {
-        // On libère toujours le verrou, même en cas d'erreur
         isRunning = false;
     }
 
-    console.log('✅ [CRON] Fin du cycle.');
+    console.log('✅ [CRON] Fin du cycle Bounties.');
 }
 
 function startCronJobs() {
-    console.log('⏰ CRON planifié toutes les 3 heures (0 */3 * * *).');
+    console.log('⏰ CRON GitHub planifié toutes les 3 heures (0 */3 * * *).');
     cron.schedule('0 */3 * * *', runBountyFetcherJob);
 }
 
