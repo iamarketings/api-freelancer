@@ -4,24 +4,27 @@ const router = express.Router();
 
 /**
  * GET /api/jobs
- * Offres d'emploi remote (Remotive + Jobicy) avec pagination
+ * Offres d'emploi remote (Remotive, Jobicy, RemoteOK, WeWorkRemotely, etc) avec pagination
  */
 router.get('/', (req, res) => {
     fetchOpportunities(req, res, (query) => {
-        return query.in('source', ['Remotive', 'Jobicy']);
+        // We include both Job/Freelenance APIs and the RSS sources
+        return query.not('source', 'in', '("Devpost","GitHub")');
     });
 });
 
 /**
  * POST /api/jobs/refresh
- * Force la resynchronisation de Remotive et Jobicy
+ * Force la resynchronisation
  */
 router.post('/refresh', (req, res) => {
-    const { runRemotiveFetcherJob } = require('../jobs/remotiveFetcher');
-    const { runJobicyFetcherJob } = require('../jobs/jobicyFetcher');
-    runRemotiveFetcherJob().catch(console.error);
-    setTimeout(() => runJobicyFetcherJob().catch(console.error), 5000);
-    res.json({ success: true, message: "Mise à jour Remotive + Jobicy lancée en arrière-plan." });
+    const { runJobsFetcherJob } = require('../jobs/jobsFetcher');
+    const { runRSSFetcherJob } = require('../jobs/rssFetcher');
+
+    runJobsFetcherJob().catch(console.error);
+    setTimeout(() => runRSSFetcherJob().catch(console.error), 5000);
+
+    res.json({ success: true, message: "Mise à jour Jobs (API + RSS) lancée en arrière-plan." });
 });
 
 module.exports = router;

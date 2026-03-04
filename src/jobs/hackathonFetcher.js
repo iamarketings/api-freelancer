@@ -1,118 +1,156 @@
-const axios = require('axios');
 const cron = require('node-cron');
+const axios = require('axios');
 const supabase = require('../db/supabase');
-require('dotenv').config();
+const { qualifyLeadWithAI } = require('./aiQualifier');
+const { calculateLeadScore } = require('./leadScoringAlgo');
 
-/**
- * Nettoie le HTML des champs de l'API Devpost (ex: prize_amount qui contient des <span>)
- */
-function stripHtml(str) {
-    if (!str) return '';
-    return str.replace(/<[^>]*>/g, '').trim();
+let isRunning = false;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function normalizeUrl(url) {
+    if (!url) return null;
+    try {
+        const u = new URL(url);
+        u.search = ''; u.hash = '';
+        return u.toString();
+    } catch { return url; }
 }
 
 async function fetchDevpostHackathons() {
-    const allHackathons = [];
+    const newLeads = [];
+    console.log('\n🏆 [Hackathons] Devpost API...');
     const MAX_PAGES = 5;
+
+    const HTTP_HEADERS = {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+    };
 
     for (let page = 1; page <= MAX_PAGES; page++) {
         try {
-            const response = await axios.get('https://devpost.com/api/hackathons', {
+            const resp = await axios.get('https://devpost.com/api/hackathons', {
                 params: { page, per_page: 24, status: 'open', order_by: 'deadline', sort_by: 'asc' },
-                headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; BountyHunterBot/1.0)' },
+                headers: HTTP_HEADERS,
                 timeout: 10000,
             });
+            const hackathons = resp.data.hackathons || [];
+            if (!hackathons.length) break;
 
-            const hackathons = response.data.hackathons;
-            if (!hackathons || hackathons.length === 0) break;
+            for (const hack of hackathons) {
+                const id = `devpost-${hack.id}`;
+                const url = hack.url || `https://devpost.com/hackathons/${hack.id}`;
 
-            allHackathons.push(...hackathons);
-            console.log(`[Devpost API] Page ${page} récupérée (${allHackathons.length} hackathons total)`);
-            await new Promise(resolve => setTimeout(resolve, 800));
+                const stripHtml = s => (s || '').replace(/<[^>]*>/g, '').trim();
+                const prizeStr  = stripHtml(hack.prize_amount || '');
+                const location  = hack.displayed_location?.location || 'En ligne';
+                const dates     = hack.submission_period_dates || '';
+                let preview     = `Hackathon ${location}.`;
+                if (prizeStr) preview += ` Prix : ${prizeStr}.`;
+                if (dates)    preview += ` Dates : ${dates}.`;
 
-        } catch (error) {
-            console.error(`[Devpost API] Erreur page ${page}:`, error.message);
-            continue; // On continue sur la page suivante même en cas de hoquet réseau
+                newLeads.push({
+                    id, source: 'Devpost',
+                    title: `[Hackathon] ${hack.title}`,
+                    url,
+                    created_at: new Date().toISOString(),
+                    preview,
+                    type: 'hackathon',
+                    extra_data: {
+                        image_url: hack.thumbnail_url ? (hack.thumbnail_url.startsWith('//') ? 'https:' + hack.thumbnail_url : hack.thumbnail_url) : null,
+                        registrations_count: hack.registrations_count
+                    }
+                });
+            }
+            console.log(`   [Hackathons] Devpost page ${page} trouvée`);
+            await sleep(800);
+        } catch (err) {
+            console.error(`   ❌ Devpost page ${page}: ${err.message}`);
         }
     }
 
-    return allHackathons;
-}
-
-function calculateHackathonScore(hack) {
-    let score = 70;
-
-    const prizeStr = stripHtml(hack.prize_amount || '');
-    const prizeNum = parseInt(prizeStr.replace(/[^0-9]/g, '')) || 0;
-    if (prizeNum > 10000) score += 20;
-    else if (prizeNum > 1000) score += 10;
-
-    if (hack.registrations_count && hack.registrations_count > 500) score += 5;
-    if (hack.managed_by_devpost_badge) score += 5; // Badge officiel Devpost
-
-    return Math.min(score, 100);
+    return newLeads;
 }
 
 async function runHackathonFetcherJob() {
-    console.log('🌐 [CRON] Début de la récupération des Hackathons Devpost (Supabase)...');
+    if (isRunning) {
+        console.log('⚠️ [CRON] Job Hackathons déjà en cours, cycle ignoré.');
+        return;
+    }
+
+    isRunning = true;
+    console.log('🔄 [CRON] Début de la récupération des Hackathons Devpost (Supabase)...');
 
     try {
-        const hackathons = await fetchDevpostHackathons();
-        console.log(`[CRON] ${hackathons.length} hackathons trouvés sur Devpost.`);
+        const issues = await fetchDevpostHackathons();
+        console.log(`[CRON] ${issues.length} hackathons actifs trouvés.`);
 
-        let addedCount = 0;
-        let updatedCount = 0;
+        // Récupérer les IDs déjà en base pour éviter un traitement IA inutile
+        const { data: existingData } = await supabase.from('opportunities').select('id, score').in('id', issues.map(i => i.id));
+        const existingIds = new Set(existingData?.map(r => r.id) || []);
 
-        for (const hack of hackathons) {
-            const hackId = `devpost-${hack.id}`;
-            const score = calculateHackathonScore(hack);
+        const newIssuesToProcess = issues.filter(issue => !existingIds.has(issue.id));
 
-            // Image : l'URL commence par "//" (sans https:), on la corrige
-            const imageUrl = hack.thumbnail_url
-                ? (hack.thumbnail_url.startsWith('//') ? 'https:' + hack.thumbnail_url : hack.thumbnail_url)
-                : null;
+        console.log(`🤖 ${newIssuesToProcess.length} nouveaux hackathons à évaluer avec l'IA...`);
 
-            // Résumé : on compose une phrase avec les données disponibles
-            const prizeStr = stripHtml(hack.prize_amount || '');
-            const location = hack.displayed_location?.location || 'En ligne';
-            const dates = hack.submission_period_dates || '';
-            let summary = `Hackathon ${location}.`;
-            if (prizeStr) summary += ` Prix : ${prizeStr}.`;
-            if (dates) summary += ` Dates : ${dates}.`;
+        // Traitement séquentiel
+        for (let i = 0; i < newIssuesToProcess.length; i++) {
+            const lead = newIssuesToProcess[i];
 
-            const hackData = {
-                id: hackId,
-                title: `[Hackathon] ${hack.title}`,
-                source: 'Devpost',
-                url: hack.url || `https://devpost.com/hackathons/${hack.id}`,
-                image_url: imageUrl,
-                state: 'OPEN',
-                comment_count: hack.registrations_count || 0,
-                created_at: new Date().toISOString(),
-                last_activity_at: new Date().toISOString(),
-                labels: ['hackathon', 'devpost'],
-                score,
-                ai_summary: summary,
-                is_scam: false,
-                discovered_at: new Date().toISOString()
-            };
+            try {
+                const qualified = await qualifyLeadWithAI(lead, null);
 
-            const { error } = await supabase
-                .from('opportunities')
-                .upsert(hackData, { onConflict: 'id' });
+                if (!qualified || qualified.ai_error) {
+                     console.log(`[Hackathons] ⚠️  Erreur IA ou ignoré — ${lead.title}`);
+                     await sleep(500);
+                     continue;
+                }
 
-            if (error) {
-                console.error(`❌ [Supabase] Erreur upsert hackathon ${hackId}:`, error.message);
-            } else {
-                console.log(`✨ Hackathon traité : ${hack.title}`);
-                addedCount++;
+                qualified.score = calculateLeadScore(qualified);
+
+                const opportunityData = {
+                    id: qualified.id,
+                    title: qualified.title,
+                    source: qualified.source,
+                    url: qualified.url,
+                    image_url: lead.extra_data.image_url,
+                    state: 'OPEN',
+                    comment_count: lead.extra_data.registrations_count || 0,
+                    created_at: qualified.created_at || new Date().toISOString(),
+                    last_activity_at: new Date().toISOString(),
+                    labels: ['hackathon', 'devpost'],
+                    score: qualified.score,
+                    ai_summary: qualified.summary || '',
+                    is_scam: qualified.is_scam || false,
+                    discovered_at: new Date().toISOString(),
+                    contact: qualified.contact || null,
+                    budget: qualified.budget || null,
+                    skills: qualified.skills || [],
+                    summary_fr: qualified.summary_fr || '',
+                    enriched: qualified.enriched || null
+                };
+
+                const { error } = await supabase.from('opportunities').upsert(opportunityData, { onConflict: 'id' });
+
+                if (error) {
+                    console.error(`❌ [Supabase] Erreur upsert hackathon ${lead.id}:`, error.message);
+                } else {
+                    console.log(`✨ Hackathon validé (${i + 1}/${newIssuesToProcess.length}): ${lead.title} (Score: ${qualified.score})`);
+                }
+
+                await sleep(500);
+
+            } catch (err) {
+                console.error(`Erreur IA sur l'hackathon ${lead.id}:`, err.message);
             }
         }
-
-        console.log(`✅ [CRON] Devpost terminé : ${addedCount + updatedCount} hackathons traités.`);
     } catch (error) {
-        console.error('❌ [CRON] Erreur récupération Devpost :', error.message);
+        console.error('❌ [CRON] Erreur générale Hackathons :', error.message);
+    } finally {
+        isRunning = false;
     }
+
+    console.log('✅ [CRON] Fin du cycle Hackathons.');
 }
 
 function startHackathonCron() {

@@ -32,16 +32,28 @@ const fetchOpportunities = async (req, res, queryModifier) => {
             totalItems: count,
             count: data.length,
             data: data.map(item => ({
-                ...item,
-                repo: item.source,
-                directApplyUrl: item.direct_apply_url,
+                id: item.id,
+                title: item.title,
+                source: item.source,
+                repo: item.source, // backwards compatibility
+                url: item.url,
                 imageUrl: item.image_url,
+                state: item.state,
                 commentCount: item.comment_count,
                 createdAt: item.created_at,
                 lastActivityAt: item.last_activity_at,
+                labels: item.labels,
+                score: item.score,
                 aiSummary: item.ai_summary,
+                summaryFr: item.summary_fr,
                 isScam: item.is_scam,
-                ...(item.enriched_data ? { enriched: item.enriched_data } : {})
+                discoveredAt: item.discovered_at,
+
+                // Nouveaux champs V2 (Lab)
+                contact: item.contact,
+                budget: item.budget,
+                skills: item.skills,
+                enriched: item.enriched || item.enriched_data
             }))
         });
     } catch (error) {

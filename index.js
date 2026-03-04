@@ -4,8 +4,8 @@ const cors = require('cors');
 const { startCronJobs, runBountyFetcherJob } = require('./src/jobs/bountyFetcher');
 const { startCleanupCron } = require('./src/jobs/cleanupClosedBounties');
 const { startHackathonCron, runHackathonFetcherJob } = require('./src/jobs/hackathonFetcher');
-const { startRemotiveCron, runRemotiveFetcherJob } = require('./src/jobs/remotiveFetcher');
-const { startJobicyCron, runJobicyFetcherJob } = require('./src/jobs/jobicyFetcher');
+const { startJobsCron, runJobsFetcherJob } = require('./src/jobs/jobsFetcher');
+const { startRSSCron, runRSSFetcherJob } = require('./src/jobs/rssFetcher');
 const bountiesRouter = require('./src/routes/bounties');
 const hackathonRouter = require('./src/routes/hackathon');
 const jobsRouter = require('./src/routes/jobs');
@@ -201,11 +201,11 @@ app.listen(PORT, () => {
     startHackathonCron();
     setTimeout(() => runHackathonFetcherJob().catch(console.error), 10000);
 
-    // Remotive : CRON 12h + premier lancement à +45s
-    startRemotiveCron();
-    setTimeout(() => runRemotiveFetcherJob().catch(console.error), 45000);
+    // Jobs (Remotive/Jobicy) : CRON 12h + premier lancement à +45s
+    startJobsCron();
+    setTimeout(() => runJobsFetcherJob().catch(console.error), 45000);
 
-    // Jobicy : CRON 12h30 + premier lancement à +90s
-    startJobicyCron();
-    setTimeout(() => runJobicyFetcherJob().catch(console.error), 90000);
+    // RSS (Reddit/Upwork/RemoteOK) : CRON 6h + premier lancement à +90s
+    startRSSCron();
+    setTimeout(() => runRSSFetcherJob().catch(console.error), 90000);
 });

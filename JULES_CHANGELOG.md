@@ -30,3 +30,12 @@ Le code est maintenant plus propre et la dette technique réduite. Tout ajout de
 
 ---
 *JULES a touché aux fichiers listés ci-dessus pour rendre le projet plus robuste et pérenne.*
+
+## [V2.0.0] - $(date +'%Y-%m-%d')
+### Changed
+- **AI Identity:** Jules
+- **Database (Supabase):** Integrated V2 schema by expanding `opportunities` table with new JSONB columns (`contact`, `skills`, `enriched`) and text fields (`budget`, `summary_fr`). Avoids creating local JSON queue or results files.
+- **Scraper Architecture:** Refactored the `lab/` scripts back into the legacy decoupled architecture (`bountyFetcher.js`, `hackathonFetcher.js`, `jobsFetcher.js`, `rssFetcher.js`).
+- **Scraper Logic:** Fetchers now immediately qualify raw data using `aiQualifier.js` via DeepSeek and score it with `leadScoringAlgo.js` before inserting into Supabase (`upsert` via `opportunities` table). Replaced standalone unified scraper logic to keep the Express app as the main orchestrator via `node-cron`.
+- **API Endpoints:** Updated `src/controllers/opportunitiesController.js` to return all new V2 fields (like `contact`, `budget`, `summaryFr`, etc.) while ensuring backward compatibility with frontend queries.
+- **Removed:** Removed obsolete scripts `src/jobs/phase1_scraper.js`, `src/jobs/phase2_qualifier.js`, `src/jobs/unified_scraper.js`, `src/jobs/remotiveFetcher.js`, and `src/jobs/jobicyFetcher.js`.
